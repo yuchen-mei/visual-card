@@ -14,7 +14,6 @@
       --text: rgba(255, 255, 255, 0.94);
       --muted: rgba(255, 255, 255, 0.62);
       --soft: rgba(255, 255, 255, 0.42);
-      --accent: #7dd3fc;
       --danger: #fca5a5;
       --shadow: 0 28px 90px rgba(0, 0, 0, 0.42);
       --radius: 28px;
@@ -277,55 +276,12 @@
 
     .slice:hover,
     .slice.active {
-      transform: scale(1.028);
+      transform: scale(1.026);
       filter: drop-shadow(0 18px 24px rgba(0, 0, 0, 0.26));
     }
 
     .slice.dim {
       opacity: 0.38;
-    }
-
-    .center-panel {
-      position: absolute;
-      inset: 50% auto auto 50%;
-      width: 210px;
-      height: 210px;
-      transform: translate(-50%, -50%);
-      border-radius: 999px;
-      display: grid;
-      place-items: center;
-      text-align: center;
-      pointer-events: none;
-      background:
-        radial-gradient(circle at 36% 20%, rgba(255, 255, 255, 0.16), transparent 42%),
-        rgba(8, 13, 25, 0.72);
-      border: 1px solid rgba(255, 255, 255, 0.10);
-      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
-    }
-
-    .center-ticker {
-      font-size: 34px;
-      font-weight: 900;
-      letter-spacing: -0.06em;
-    }
-
-    .center-name {
-      margin-top: 3px;
-      color: var(--muted);
-      font-size: 14px;
-    }
-
-    .center-weight {
-      margin-top: 10px;
-      font-size: 30px;
-      font-weight: 900;
-      letter-spacing: -0.05em;
-    }
-
-    .center-value {
-      margin-top: 2px;
-      color: var(--muted);
-      font-size: 14px;
     }
 
     .summary-strip {
@@ -550,24 +506,15 @@
 
       .chart-card {
         padding: 14px;
-        min-height: 510px;
+        min-height: 500px;
       }
 
       .chart-wrap {
-        min-height: 395px;
+        min-height: 390px;
       }
 
-      .center-panel {
-        width: 170px;
-        height: 170px;
-      }
-
-      .center-ticker {
-        font-size: 28px;
-      }
-
-      .center-weight {
-        font-size: 26px;
+      svg {
+        width: min(100%, 390px);
       }
 
       .holding {
@@ -580,6 +527,20 @@
         display: flex;
         gap: 10px;
         align-items: baseline;
+      }
+    }
+
+    @media (max-width: 360px) {
+      .chart-card {
+        min-height: 460px;
+      }
+
+      .chart-wrap {
+        min-height: 350px;
+      }
+
+      svg {
+        width: min(100%, 340px);
       }
     }
   </style>
@@ -617,15 +578,8 @@
           <section class="chart-card">
             <div class="chart-wrap">
               <svg id="chart" viewBox="0 0 360 360" role="img" aria-label="持仓饼图"></svg>
-              <div class="center-panel">
-                <div>
-                  <div id="centerTicker" class="center-ticker"></div>
-                  <div id="centerName" class="center-name"></div>
-                  <div id="centerWeight" class="center-weight"></div>
-                  <div id="centerValue" class="center-value"></div>
-                </div>
-              </div>
             </div>
+
             <div class="summary-strip">
               <div class="summary-item">
                 <div class="summary-label">总市值</div>
@@ -866,25 +820,43 @@
       ].join(" ");
     }
 
+    function svgEl(tag, attrs = {}) {
+      const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      Object.entries(attrs).forEach(([key, value]) => {
+        el.setAttribute(key, value);
+      });
+      return el;
+    }
+
+    function centerLabel(value) {
+      const text = String(value || "");
+      if (text.length <= 12) return text;
+      return `${text.slice(0, 11)}…`;
+    }
+
     function renderChart() {
       const svg = $("chart");
       const holdings = state.data.holdings;
       const total = state.data.totalValue;
+      const selected = holdings[state.selected];
+
       svg.innerHTML = "";
 
       let angle = 0;
+
       holdings.forEach((item, index) => {
         const share = item.value / total;
         const end = angle + share * 360;
-        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
 
-        path.setAttribute("d", donutPath(180, 180, 154, 82, angle, end));
-        path.setAttribute("fill", state.colors[index % state.colors.length]);
-        path.setAttribute("class", [
-          "slice",
-          index === state.selected ? "active" : "",
-          index !== state.selected ? "dim" : ""
-        ].join(" ").trim());
+        const path = svgEl("path", {
+          d: donutPath(180, 180, 154, 92, angle, end),
+          fill: state.colors[index % state.colors.length],
+          class: [
+            "slice",
+            index === state.selected ? "active" : "",
+            index !== state.selected ? "dim" : ""
+          ].join(" ").trim()
+        });
 
         path.addEventListener("mouseenter", () => {
           state.selected = index;
@@ -900,22 +872,73 @@
         angle = end;
       });
 
-      const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      ring.setAttribute("cx", "180");
-      ring.setAttribute("cy", "180");
-      ring.setAttribute("r", "154");
-      ring.setAttribute("fill", "none");
-      ring.setAttribute("stroke", "rgba(255,255,255,0.14)");
-      ring.setAttribute("stroke-width", "1");
-      svg.appendChild(ring);
-    }
+      svg.appendChild(svgEl("circle", {
+        cx: "180",
+        cy: "180",
+        r: "154",
+        fill: "none",
+        stroke: "rgba(255,255,255,0.14)",
+        "stroke-width": "1"
+      }));
 
-    function renderCenter() {
-      const item = state.data.holdings[state.selected];
-      $("centerTicker").textContent = item.ticker;
-      $("centerName").textContent = item.nameZh;
-      $("centerWeight").textContent = formatPct(item.weight);
-      $("centerValue").textContent = formatCurrency(item.value);
+      const center = svgEl("g", {
+        "text-anchor": "middle",
+        "dominant-baseline": "middle"
+      });
+
+      center.appendChild(svgEl("circle", {
+        cx: "180",
+        cy: "180",
+        r: "70",
+        fill: "rgba(8,13,25,0.78)",
+        stroke: "rgba(255,255,255,0.12)",
+        "stroke-width": "1"
+      }));
+
+      const ticker = svgEl("text", {
+        x: "180",
+        y: "148",
+        fill: "rgba(255,255,255,0.96)",
+        "font-size": "26",
+        "font-weight": "900",
+        "letter-spacing": "-1"
+      });
+      ticker.textContent = selected.ticker;
+
+      const name = svgEl("text", {
+        x: "180",
+        y: "172",
+        fill: "rgba(255,255,255,0.62)",
+        "font-size": "11",
+        "font-weight": "500"
+      });
+      name.textContent = centerLabel(selected.nameZh || selected.name || "");
+
+      const weight = svgEl("text", {
+        x: "180",
+        y: "202",
+        fill: "rgba(255,255,255,0.96)",
+        "font-size": "25",
+        "font-weight": "900",
+        "letter-spacing": "-1"
+      });
+      weight.textContent = formatPct(selected.weight);
+
+      const value = svgEl("text", {
+        x: "180",
+        y: "226",
+        fill: "rgba(255,255,255,0.62)",
+        "font-size": "11",
+        "font-weight": "500"
+      });
+      value.textContent = formatCurrency(selected.value);
+
+      center.appendChild(ticker);
+      center.appendChild(name);
+      center.appendChild(weight);
+      center.appendChild(value);
+
+      svg.appendChild(center);
     }
 
     function renderList() {
@@ -967,7 +990,6 @@
 
     function render() {
       renderChart();
-      renderCenter();
       renderList();
       renderSummary();
     }

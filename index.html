@@ -1,0 +1,997 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>持仓构成</title>
+  <style>
+    :root {
+      --bg0: #070a12;
+      --bg1: #0b1020;
+      --card: rgba(255, 255, 255, 0.08);
+      --card2: rgba(255, 255, 255, 0.12);
+      --line: rgba(255, 255, 255, 0.16);
+      --text: rgba(255, 255, 255, 0.94);
+      --muted: rgba(255, 255, 255, 0.62);
+      --soft: rgba(255, 255, 255, 0.42);
+      --accent: #7dd3fc;
+      --danger: #fca5a5;
+      --shadow: 0 28px 90px rgba(0, 0, 0, 0.42);
+      --radius: 28px;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at 16% 10%, rgba(125, 211, 252, 0.25), transparent 32%),
+        radial-gradient(circle at 92% 16%, rgba(167, 139, 250, 0.22), transparent 34%),
+        radial-gradient(circle at 50% 95%, rgba(52, 211, 153, 0.12), transparent 36%),
+        linear-gradient(145deg, var(--bg0), var(--bg1));
+      color: var(--text);
+      font-family:
+        Inter,
+        ui-sans-serif,
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        "SF Pro Text",
+        "Segoe UI",
+        "PingFang SC",
+        "Hiragino Sans GB",
+        "Microsoft YaHei",
+        sans-serif;
+    }
+
+    body {
+      overflow-x: hidden;
+    }
+
+    .shell {
+      width: min(1180px, calc(100vw - 32px));
+      min-height: 100vh;
+      margin: 0 auto;
+      padding: 44px 0 56px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .glass {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: calc(var(--radius) + 8px);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.06)),
+        rgba(255, 255, 255, 0.04);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(22px);
+      -webkit-backdrop-filter: blur(22px);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .glass::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(90deg, rgba(255, 255, 255, 0.10), transparent 24%, transparent 76%, rgba(255, 255, 255, 0.08)),
+        radial-gradient(circle at 30% 0%, rgba(255, 255, 255, 0.18), transparent 34%);
+      opacity: 0.72;
+    }
+
+    .lock,
+    .dashboard {
+      position: relative;
+      z-index: 1;
+    }
+
+    .lock {
+      min-height: 680px;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+    }
+
+    .lock-card {
+      width: min(520px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 32px;
+      padding: 34px;
+      background: rgba(255, 255, 255, 0.08);
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.26);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: #34d399;
+      box-shadow: 0 0 20px rgba(52, 211, 153, 0.9);
+    }
+
+    h1 {
+      margin: 22px 0 10px;
+      font-size: clamp(34px, 5vw, 56px);
+      line-height: 1.04;
+      letter-spacing: -0.05em;
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 16px;
+    }
+
+    .input-row {
+      margin-top: 28px;
+      display: flex;
+      gap: 12px;
+    }
+
+    input {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--line);
+      outline: none;
+      border-radius: 18px;
+      padding: 16px 16px;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.08);
+      font-size: 16px;
+    }
+
+    input::placeholder {
+      color: var(--soft);
+    }
+
+    button {
+      border: 0;
+      border-radius: 18px;
+      padding: 15px 18px;
+      color: #08111f;
+      background: linear-gradient(135deg, #e0f2fe, #93c5fd);
+      font-weight: 800;
+      font-size: 15px;
+      cursor: pointer;
+      white-space: nowrap;
+      box-shadow: 0 14px 34px rgba(96, 165, 250, 0.22);
+    }
+
+    button.secondary {
+      color: var(--text);
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.08);
+      box-shadow: none;
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .error {
+      min-height: 24px;
+      margin-top: 14px;
+      color: var(--danger);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .dashboard {
+      display: none;
+      padding: 36px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 24px;
+    }
+
+    .title-block h2 {
+      margin: 10px 0 8px;
+      font-size: clamp(32px, 4.8vw, 58px);
+      letter-spacing: -0.055em;
+      line-height: 1.02;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      padding-top: 4px;
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1.08fr 0.92fr;
+      gap: 24px;
+      align-items: stretch;
+    }
+
+    .chart-card,
+    .list-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.07);
+      overflow: hidden;
+    }
+
+    .chart-card {
+      min-height: 660px;
+      display: grid;
+      grid-template-rows: 1fr auto;
+      padding: 22px;
+    }
+
+    .chart-wrap {
+      position: relative;
+      min-height: 530px;
+      display: grid;
+      place-items: center;
+    }
+
+    svg {
+      width: min(100%, 560px);
+      height: auto;
+      display: block;
+      overflow: visible;
+    }
+
+    .slice {
+      transition: transform 180ms ease, opacity 180ms ease, filter 180ms ease;
+      cursor: pointer;
+      transform-origin: 180px 180px;
+    }
+
+    .slice:hover,
+    .slice.active {
+      transform: scale(1.028);
+      filter: drop-shadow(0 18px 24px rgba(0, 0, 0, 0.26));
+    }
+
+    .slice.dim {
+      opacity: 0.38;
+    }
+
+    .center-panel {
+      position: absolute;
+      inset: 50% auto auto 50%;
+      width: 210px;
+      height: 210px;
+      transform: translate(-50%, -50%);
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 36% 20%, rgba(255, 255, 255, 0.16), transparent 42%),
+        rgba(8, 13, 25, 0.72);
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+    }
+
+    .center-ticker {
+      font-size: 34px;
+      font-weight: 900;
+      letter-spacing: -0.06em;
+    }
+
+    .center-name {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .center-weight {
+      margin-top: 10px;
+      font-size: 30px;
+      font-weight: 900;
+      letter-spacing: -0.05em;
+    }
+
+    .center-value {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .summary-strip {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    .summary-item {
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 16px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .summary-label {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .summary-value {
+      margin-top: 6px;
+      font-size: 20px;
+      font-weight: 850;
+      letter-spacing: -0.035em;
+    }
+
+    .list-card {
+      padding: 18px;
+    }
+
+    .list-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      padding: 4px 4px 14px;
+    }
+
+    .list-head strong {
+      font-size: 22px;
+      letter-spacing: -0.04em;
+    }
+
+    .list-head span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .holding-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .holding {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 12px;
+      align-items: center;
+      border: 1px solid rgba(255, 255, 255, 0.11);
+      border-radius: 20px;
+      padding: 13px 14px;
+      background: rgba(255, 255, 255, 0.055);
+      cursor: pointer;
+      transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+    }
+
+    .holding:hover,
+    .holding.active {
+      transform: translateY(-1px);
+      border-color: rgba(255, 255, 255, 0.28);
+      background: rgba(255, 255, 255, 0.105);
+    }
+
+    .swatch {
+      width: 13px;
+      height: 42px;
+      border-radius: 999px;
+    }
+
+    .holding-main {
+      min-width: 0;
+    }
+
+    .ticker-line {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 0;
+    }
+
+    .ticker {
+      font-size: 18px;
+      font-weight: 900;
+      letter-spacing: -0.045em;
+    }
+
+    .kind {
+      color: var(--muted);
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.075);
+      border: 1px solid rgba(255, 255, 255, 0.10);
+    }
+
+    .zh {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 14px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .holding-side {
+      text-align: right;
+    }
+
+    .pct {
+      font-size: 17px;
+      font-weight: 850;
+      letter-spacing: -0.035em;
+    }
+
+    .val {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 22px;
+      transform: translateX(-50%);
+      max-width: calc(100vw - 28px);
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(10, 15, 28, 0.88);
+      box-shadow: 0 18px 44px rgba(0, 0, 0, 0.36);
+      color: var(--text);
+      font-size: 14px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 160ms ease, transform 160ms ease;
+      z-index: 20;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(-4px);
+    }
+
+    @media (max-width: 960px) {
+      .shell {
+        width: min(100vw - 20px, 680px);
+        padding: 14px 0 28px;
+      }
+
+      .dashboard {
+        padding: 18px;
+      }
+
+      .topbar {
+        flex-direction: column;
+      }
+
+      .actions {
+        width: 100%;
+      }
+
+      .actions button {
+        flex: 1;
+      }
+
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .chart-card {
+        min-height: 570px;
+      }
+
+      .chart-wrap {
+        min-height: 450px;
+      }
+
+      svg {
+        width: min(100%, 500px);
+      }
+
+      .summary-strip {
+        grid-template-columns: 1fr;
+      }
+
+      .lock {
+        min-height: 640px;
+        padding: 18px;
+      }
+
+      .lock-card {
+        padding: 24px;
+      }
+
+      .input-row {
+        flex-direction: column;
+      }
+    }
+
+    @media (max-width: 430px) {
+      .dashboard {
+        padding: 14px;
+      }
+
+      .chart-card,
+      .list-card {
+        border-radius: 24px;
+      }
+
+      .chart-card {
+        padding: 14px;
+        min-height: 510px;
+      }
+
+      .chart-wrap {
+        min-height: 395px;
+      }
+
+      .center-panel {
+        width: 170px;
+        height: 170px;
+      }
+
+      .center-ticker {
+        font-size: 28px;
+      }
+
+      .center-weight {
+        font-size: 26px;
+      }
+
+      .holding {
+        grid-template-columns: auto 1fr;
+      }
+
+      .holding-side {
+        grid-column: 2;
+        text-align: left;
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="glass">
+      <div id="lock" class="lock">
+        <div class="lock-card">
+          <div class="eyebrow"><span class="dot"></span> encrypted portfolio</div>
+          <h1>持仓构成</h1>
+          <p>输入访问密码后，页面会在本地解密数据并渲染图表。密码不会上传，也不会写入 GitHub。</p>
+          <div class="input-row">
+            <input id="passwordInput" type="password" autocomplete="current-password" placeholder="输入访问密码" />
+            <button id="unlockBtn">解锁</button>
+          </div>
+          <div id="lockError" class="error"></div>
+        </div>
+      </div>
+
+      <div id="dashboard" class="dashboard">
+        <div class="topbar">
+          <div class="title-block">
+            <div class="eyebrow"><span class="dot"></span> portfolio snapshot</div>
+            <h2>当前股票持仓构成</h2>
+            <div id="meta" class="meta"></div>
+          </div>
+          <div class="actions">
+            <button class="secondary" id="refreshBtn">刷新数据</button>
+            <button class="secondary" id="lockBtn">锁定</button>
+          </div>
+        </div>
+
+        <div class="main-grid">
+          <section class="chart-card">
+            <div class="chart-wrap">
+              <svg id="chart" viewBox="0 0 360 360" role="img" aria-label="持仓饼图"></svg>
+              <div class="center-panel">
+                <div>
+                  <div id="centerTicker" class="center-ticker"></div>
+                  <div id="centerName" class="center-name"></div>
+                  <div id="centerWeight" class="center-weight"></div>
+                  <div id="centerValue" class="center-value"></div>
+                </div>
+              </div>
+            </div>
+            <div class="summary-strip">
+              <div class="summary-item">
+                <div class="summary-label">总市值</div>
+                <div id="totalValue" class="summary-value"></div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">最大仓位</div>
+                <div id="largestHolding" class="summary-value"></div>
+              </div>
+              <div class="summary-item">
+                <div class="summary-label">持仓数</div>
+                <div id="holdingCount" class="summary-value"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="list-card">
+            <div class="list-head">
+              <strong>持仓明细</strong>
+              <span>点击切换高亮</span>
+            </div>
+            <div id="holdingList" class="holding-list"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const state = {
+      password: "",
+      data: null,
+      selected: 0,
+      colors: [
+        "#60a5fa",
+        "#a78bfa",
+        "#34d399",
+        "#f59e0b",
+        "#fb7185",
+        "#22d3ee",
+        "#f472b6",
+        "#c084fc",
+        "#93c5fd",
+        "#86efac"
+      ]
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    const formatCurrency = (value) => {
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        maximumFractionDigits: 0
+      }).format(value);
+    };
+
+    const formatPct = (value) => {
+      return `${value.toFixed(1)}%`;
+    };
+
+    function showToast(message) {
+      const toast = $("toast");
+      toast.textContent = message;
+      toast.classList.add("show");
+      window.clearTimeout(showToast.timer);
+      showToast.timer = window.setTimeout(() => toast.classList.remove("show"), 2200);
+    }
+
+    function base64ToBytes(base64) {
+      const bin = atob(base64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return bytes;
+    }
+
+    async function deriveKey(password, salt, iterations) {
+      const material = await crypto.subtle.importKey(
+        "raw",
+        new TextEncoder().encode(password),
+        "PBKDF2",
+        false,
+        ["deriveKey"]
+      );
+
+      return crypto.subtle.deriveKey(
+        {
+          name: "PBKDF2",
+          salt,
+          iterations,
+          hash: "SHA-256"
+        },
+        material,
+        {
+          name: "AES-GCM",
+          length: 256
+        },
+        false,
+        ["decrypt"]
+      );
+    }
+
+    async function decryptPayload(encrypted, password) {
+      const salt = base64ToBytes(encrypted.salt);
+      const iv = base64ToBytes(encrypted.iv);
+      const ciphertext = base64ToBytes(encrypted.ciphertext);
+      const key = await deriveKey(password, salt, encrypted.iterations || 250000);
+
+      const plaintext = await crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv
+        },
+        key,
+        ciphertext
+      );
+
+      const text = new TextDecoder().decode(plaintext);
+      return JSON.parse(text);
+    }
+
+    async function fetchEncrypted() {
+      const response = await fetch(`./data.enc.json?ts=${Date.now()}`, {
+        cache: "no-store"
+      });
+
+      if (!response.ok) {
+        throw new Error("无法读取 data.enc.json");
+      }
+
+      return response.json();
+    }
+
+    async function unlock() {
+      const password = $("passwordInput").value.trim();
+      const error = $("lockError");
+      error.textContent = "";
+
+      if (!password) {
+        error.textContent = "请输入访问密码。";
+        return;
+      }
+
+      $("unlockBtn").disabled = true;
+      $("unlockBtn").textContent = "解密中";
+
+      try {
+        const encrypted = await fetchEncrypted();
+        const data = await decryptPayload(encrypted, password);
+        state.password = password;
+        state.data = normalizeData(data);
+        state.selected = 0;
+
+        $("lock").style.display = "none";
+        $("dashboard").style.display = "block";
+        render();
+        showToast("已解锁");
+      } catch (err) {
+        error.textContent = "密码错误，或数据文件不可用。";
+      } finally {
+        $("unlockBtn").disabled = false;
+        $("unlockBtn").textContent = "解锁";
+      }
+    }
+
+    function normalizeData(data) {
+      const holdings = [...data.holdings]
+        .filter((item) => Number(item.value) > 0)
+        .sort((a, b) => b.value - a.value);
+
+      const total = holdings.reduce((sum, item) => sum + Number(item.value), 0);
+
+      holdings.forEach((item) => {
+        item.weight = Number(item.value) / total * 100;
+      });
+
+      return {
+        ...data,
+        totalValue: total,
+        holdings
+      };
+    }
+
+    async function refreshData() {
+      if (!state.password) return;
+
+      $("refreshBtn").disabled = true;
+      $("refreshBtn").textContent = "刷新中";
+
+      try {
+        const encrypted = await fetchEncrypted();
+        const data = await decryptPayload(encrypted, state.password);
+        state.data = normalizeData(data);
+        state.selected = Math.min(state.selected, state.data.holdings.length - 1);
+        render();
+        showToast("数据已刷新");
+      } catch (err) {
+        showToast("刷新失败，请确认密码或数据文件");
+      } finally {
+        $("refreshBtn").disabled = false;
+        $("refreshBtn").textContent = "刷新数据";
+      }
+    }
+
+    function lockPage() {
+      state.password = "";
+      state.data = null;
+      state.selected = 0;
+      $("passwordInput").value = "";
+      $("dashboard").style.display = "none";
+      $("lock").style.display = "grid";
+      $("passwordInput").focus();
+    }
+
+    function polar(cx, cy, r, angleDeg) {
+      const angle = (angleDeg - 90) * Math.PI / 180;
+      return {
+        x: cx + r * Math.cos(angle),
+        y: cy + r * Math.sin(angle)
+      };
+    }
+
+    function donutPath(cx, cy, outerR, innerR, startAngle, endAngle) {
+      const largeArc = endAngle - startAngle > 180 ? 1 : 0;
+      const p1 = polar(cx, cy, outerR, startAngle);
+      const p2 = polar(cx, cy, outerR, endAngle);
+      const p3 = polar(cx, cy, innerR, endAngle);
+      const p4 = polar(cx, cy, innerR, startAngle);
+
+      return [
+        `M ${p1.x.toFixed(3)} ${p1.y.toFixed(3)}`,
+        `A ${outerR} ${outerR} 0 ${largeArc} 1 ${p2.x.toFixed(3)} ${p2.y.toFixed(3)}`,
+        `L ${p3.x.toFixed(3)} ${p3.y.toFixed(3)}`,
+        `A ${innerR} ${innerR} 0 ${largeArc} 0 ${p4.x.toFixed(3)} ${p4.y.toFixed(3)}`,
+        "Z"
+      ].join(" ");
+    }
+
+    function renderChart() {
+      const svg = $("chart");
+      const holdings = state.data.holdings;
+      const total = state.data.totalValue;
+      svg.innerHTML = "";
+
+      let angle = 0;
+      holdings.forEach((item, index) => {
+        const share = item.value / total;
+        const end = angle + share * 360;
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+
+        path.setAttribute("d", donutPath(180, 180, 154, 82, angle, end));
+        path.setAttribute("fill", state.colors[index % state.colors.length]);
+        path.setAttribute("class", [
+          "slice",
+          index === state.selected ? "active" : "",
+          index !== state.selected ? "dim" : ""
+        ].join(" ").trim());
+
+        path.addEventListener("mouseenter", () => {
+          state.selected = index;
+          render();
+        });
+
+        path.addEventListener("click", () => {
+          state.selected = index;
+          render();
+        });
+
+        svg.appendChild(path);
+        angle = end;
+      });
+
+      const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      ring.setAttribute("cx", "180");
+      ring.setAttribute("cy", "180");
+      ring.setAttribute("r", "154");
+      ring.setAttribute("fill", "none");
+      ring.setAttribute("stroke", "rgba(255,255,255,0.14)");
+      ring.setAttribute("stroke-width", "1");
+      svg.appendChild(ring);
+    }
+
+    function renderCenter() {
+      const item = state.data.holdings[state.selected];
+      $("centerTicker").textContent = item.ticker;
+      $("centerName").textContent = item.nameZh;
+      $("centerWeight").textContent = formatPct(item.weight);
+      $("centerValue").textContent = formatCurrency(item.value);
+    }
+
+    function renderList() {
+      const list = $("holdingList");
+      list.innerHTML = "";
+
+      state.data.holdings.forEach((item, index) => {
+        const row = document.createElement("div");
+        row.className = `holding ${index === state.selected ? "active" : ""}`;
+        row.innerHTML = `
+          <div class="swatch" style="background:${state.colors[index % state.colors.length]}"></div>
+          <div class="holding-main">
+            <div class="ticker-line">
+              <span class="ticker">${escapeHtml(item.ticker)}</span>
+              <span class="kind">${escapeHtml(item.type || "持仓")}</span>
+            </div>
+            <div class="zh">${escapeHtml(item.nameZh || item.name || "")}</div>
+          </div>
+          <div class="holding-side">
+            <div class="pct">${formatPct(item.weight)}</div>
+            <div class="val">${formatCurrency(item.value)}</div>
+          </div>
+        `;
+
+        row.addEventListener("mouseenter", () => {
+          state.selected = index;
+          render();
+        });
+
+        row.addEventListener("click", () => {
+          state.selected = index;
+          render();
+        });
+
+        list.appendChild(row);
+      });
+    }
+
+    function renderSummary() {
+      const data = state.data;
+      const holdings = data.holdings;
+      const largest = holdings[0];
+
+      $("meta").textContent = `${data.accountLabel || "Investment account"} · ${data.asOf || "latest"} · ${data.currency || "USD"}`;
+      $("totalValue").textContent = formatCurrency(data.totalValue);
+      $("largestHolding").textContent = `${largest.ticker} ${formatPct(largest.weight)}`;
+      $("holdingCount").textContent = `${holdings.length} 个`;
+    }
+
+    function render() {
+      renderChart();
+      renderCenter();
+      renderList();
+      renderSummary();
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    $("unlockBtn").addEventListener("click", unlock);
+    $("refreshBtn").addEventListener("click", refreshData);
+    $("lockBtn").addEventListener("click", lockPage);
+
+    $("passwordInput").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") unlock();
+    });
+
+    window.addEventListener("load", () => {
+      $("passwordInput").focus();
+    });
+  </script>
+</body>
+</html>

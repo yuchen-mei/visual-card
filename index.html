@@ -3,18 +3,19 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>持仓构成</title>
+  <title>持仓与收益</title>
   <style>
     :root {
       --bg0: #070a12;
       --bg1: #0b1020;
-      --card: rgba(255, 255, 255, 0.08);
-      --card2: rgba(255, 255, 255, 0.12);
       --line: rgba(255, 255, 255, 0.16);
+      --line-strong: rgba(255, 255, 255, 0.26);
       --text: rgba(255, 255, 255, 0.94);
       --muted: rgba(255, 255, 255, 0.62);
       --soft: rgba(255, 255, 255, 0.42);
       --danger: #fca5a5;
+      --good: #86efac;
+      --warn: #fde68a;
       --shadow: 0 28px 90px rgba(0, 0, 0, 0.42);
       --radius: 28px;
     }
@@ -232,6 +233,39 @@
       padding-top: 4px;
     }
 
+    .tabs {
+      display: inline-flex;
+      gap: 8px;
+      padding: 6px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.065);
+      margin-bottom: 20px;
+    }
+
+    .tab {
+      color: var(--muted);
+      border: 0;
+      border-radius: 999px;
+      padding: 11px 18px;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .tab.active {
+      color: #08111f;
+      background: linear-gradient(135deg, #e0f2fe, #93c5fd);
+      box-shadow: 0 12px 30px rgba(96, 165, 250, 0.18);
+    }
+
+    .panel {
+      display: none;
+    }
+
+    .panel.active {
+      display: block;
+    }
+
     .main-grid {
       display: grid;
       grid-template-columns: 1.08fr 0.92fr;
@@ -240,7 +274,10 @@
     }
 
     .chart-card,
-    .list-card {
+    .list-card,
+    .metric-card,
+    .perf-card,
+    .ranking-card {
       border: 1px solid var(--line);
       border-radius: var(--radius);
       background: rgba(255, 255, 255, 0.07);
@@ -319,6 +356,7 @@
       align-items: baseline;
       justify-content: space-between;
       padding: 4px 4px 14px;
+      gap: 14px;
     }
 
     .list-head strong {
@@ -329,6 +367,7 @@
     .list-head span {
       color: var(--muted);
       font-size: 13px;
+      text-align: right;
     }
 
     .holding-list {
@@ -414,6 +453,171 @@
       font-size: 13px;
     }
 
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-bottom: 24px;
+    }
+
+    .metric-card {
+      padding: 20px;
+      min-height: 132px;
+      background:
+        radial-gradient(circle at 20% 0%, rgba(125, 211, 252, 0.13), transparent 42%),
+        rgba(255, 255, 255, 0.07);
+    }
+
+    .metric-card.primary {
+      background:
+        radial-gradient(circle at 18% 0%, rgba(134, 239, 172, 0.2), transparent 44%),
+        rgba(255, 255, 255, 0.08);
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .metric-value {
+      margin-top: 12px;
+      font-size: clamp(26px, 3.4vw, 40px);
+      font-weight: 900;
+      letter-spacing: -0.06em;
+      line-height: 1;
+    }
+
+    .metric-sub {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .performance-grid {
+      display: grid;
+      grid-template-columns: 0.95fr 1.05fr;
+      gap: 24px;
+      align-items: stretch;
+    }
+
+    .perf-card {
+      padding: 18px;
+    }
+
+    .perf-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .perf-row {
+      border: 1px solid rgba(255, 255, 255, 0.11);
+      border-radius: 22px;
+      padding: 16px;
+      background: rgba(255, 255, 255, 0.055);
+      cursor: pointer;
+      transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+    }
+
+    .perf-row.active,
+    .perf-row:hover {
+      transform: translateY(-1px);
+      border-color: var(--line-strong);
+      background: rgba(255, 255, 255, 0.105);
+    }
+
+    .perf-row-top,
+    .perf-row-bottom {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: baseline;
+    }
+
+    .perf-name {
+      font-size: 18px;
+      font-weight: 850;
+      letter-spacing: -0.04em;
+    }
+
+    .gain {
+      color: var(--good);
+      font-weight: 900;
+      letter-spacing: -0.045em;
+    }
+
+    .gain.negative {
+      color: var(--danger);
+    }
+
+    .perf-row-bottom {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .bar-track {
+      height: 10px;
+      border-radius: 999px;
+      margin-top: 14px;
+      background: rgba(255, 255, 255, 0.10);
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #60a5fa, #34d399);
+      min-width: 4px;
+    }
+
+    .ranking-card {
+      margin-top: 24px;
+      padding: 18px;
+    }
+
+    .rank-list {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+
+    .rank-row {
+      border: 1px solid rgba(255, 255, 255, 0.11);
+      border-radius: 18px;
+      padding: 13px 14px;
+      background: rgba(255, 255, 255, 0.055);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .rank-main {
+      min-width: 0;
+    }
+
+    .rank-title {
+      font-weight: 850;
+      letter-spacing: -0.04em;
+    }
+
+    .rank-sub {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 180px;
+    }
+
+    .rank-gain {
+      text-align: right;
+      white-space: nowrap;
+    }
+
     .toast {
       position: fixed;
       left: 50%;
@@ -460,7 +664,9 @@
         flex: 1;
       }
 
-      .main-grid {
+      .main-grid,
+      .performance-grid,
+      .metric-grid {
         grid-template-columns: 1fr;
       }
 
@@ -492,6 +698,10 @@
       .input-row {
         flex-direction: column;
       }
+
+      .rank-list {
+        grid-template-columns: 1fr;
+      }
     }
 
     @media (max-width: 430px) {
@@ -500,7 +710,10 @@
       }
 
       .chart-card,
-      .list-card {
+      .list-card,
+      .perf-card,
+      .metric-card,
+      .ranking-card {
         border-radius: 24px;
       }
 
@@ -528,6 +741,14 @@
         gap: 10px;
         align-items: baseline;
       }
+
+      .tabs {
+        width: 100%;
+      }
+
+      .tab {
+        flex: 1;
+      }
     }
 
     @media (max-width: 360px) {
@@ -551,7 +772,7 @@
       <div id="lock" class="lock">
         <div class="lock-card">
           <div class="eyebrow"><span class="dot"></span> encrypted portfolio</div>
-          <h1>持仓构成</h1>
+          <h1>持仓与收益</h1>
           <p>输入访问密码后，页面会在本地解密数据并渲染图表。密码不会上传，也不会写入 GitHub。</p>
           <div class="input-row">
             <input id="passwordInput" type="password" autocomplete="current-password" placeholder="输入访问密码" />
@@ -565,7 +786,7 @@
         <div class="topbar">
           <div class="title-block">
             <div class="eyebrow"><span class="dot"></span> portfolio snapshot</div>
-            <h2>当前股票持仓构成</h2>
+            <h2>当前投资概览</h2>
             <div id="meta" class="meta"></div>
           </div>
           <div class="actions">
@@ -574,36 +795,101 @@
           </div>
         </div>
 
-        <div class="main-grid">
-          <section class="chart-card">
-            <div class="chart-wrap">
-              <svg id="chart" viewBox="0 0 360 360" role="img" aria-label="持仓饼图"></svg>
-            </div>
-
-            <div class="summary-strip">
-              <div class="summary-item">
-                <div class="summary-label">总市值</div>
-                <div id="totalValue" class="summary-value"></div>
-              </div>
-              <div class="summary-item">
-                <div class="summary-label">最大仓位</div>
-                <div id="largestHolding" class="summary-value"></div>
-              </div>
-              <div class="summary-item">
-                <div class="summary-label">持仓数</div>
-                <div id="holdingCount" class="summary-value"></div>
-              </div>
-            </div>
-          </section>
-
-          <section class="list-card">
-            <div class="list-head">
-              <strong>持仓明细</strong>
-              <span>点击切换高亮</span>
-            </div>
-            <div id="holdingList" class="holding-list"></div>
-          </section>
+        <div class="tabs" role="tablist" aria-label="Dashboard tabs">
+          <button class="tab active" id="holdingsTab">持仓</button>
+          <button class="tab" id="performanceTab">收益</button>
         </div>
+
+        <section id="holdingsPanel" class="panel active">
+          <div class="main-grid">
+            <section class="chart-card">
+              <div class="chart-wrap">
+                <svg id="holdingsChart" viewBox="0 0 360 360" role="img" aria-label="持仓饼图"></svg>
+              </div>
+
+              <div class="summary-strip">
+                <div class="summary-item">
+                  <div class="summary-label">股票 / ETF 市值</div>
+                  <div id="equityValue" class="summary-value"></div>
+                </div>
+                <div class="summary-item">
+                  <div class="summary-label">最大仓位</div>
+                  <div id="largestHolding" class="summary-value"></div>
+                </div>
+                <div class="summary-item">
+                  <div class="summary-label">持仓数</div>
+                  <div id="holdingCount" class="summary-value"></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="list-card">
+              <div class="list-head">
+                <strong>持仓明细</strong>
+                <span>点击切换高亮</span>
+              </div>
+              <div id="holdingList" class="holding-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="performancePanel" class="panel">
+          <div class="metric-grid">
+            <div class="metric-card primary">
+              <div class="metric-label">累计收益</div>
+              <div id="totalGain" class="metric-value"></div>
+              <div id="totalGainSub" class="metric-sub"></div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">累计收益率</div>
+              <div id="totalReturn" class="metric-value"></div>
+              <div class="metric-sub">按确认后的本金口径计算</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">当前展示资产</div>
+              <div id="totalCurrent" class="metric-value"></div>
+              <div class="metric-sub">美国银行 CD + Robinhood 股票 / ETF</div>
+            </div>
+          </div>
+
+          <div class="performance-grid">
+            <section class="chart-card">
+              <div class="chart-wrap">
+                <svg id="gainChart" viewBox="0 0 360 360" role="img" aria-label="收益来源饼图"></svg>
+              </div>
+              <div class="summary-strip">
+                <div class="summary-item">
+                  <div class="summary-label">本金</div>
+                  <div id="totalPrincipal" class="summary-value"></div>
+                </div>
+                <div class="summary-item">
+                  <div class="summary-label">收益来源</div>
+                  <div id="gainSourceCount" class="summary-value"></div>
+                </div>
+                <div class="summary-item">
+                  <div class="summary-label">最新日期</div>
+                  <div id="perfDate" class="summary-value"></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="perf-card">
+              <div class="list-head">
+                <strong>收益明细</strong>
+                <span>点击切换图表中心</span>
+              </div>
+              <div id="performanceList" class="perf-list"></div>
+            </section>
+          </div>
+
+          <section class="ranking-card">
+            <div class="list-head">
+              <strong>股票 / ETF 内部未实现收益</strong>
+              <span>按券商成本基础估算</span>
+            </div>
+            <div id="rankList" class="rank-list"></div>
+          </section>
+        </section>
       </div>
     </section>
   </main>
@@ -611,10 +897,15 @@
   <div id="toast" class="toast"></div>
 
   <script>
+    const EMBEDDED_DATA = null;
+    const PREVIEW_MODE = false;
+
     const state = {
       password: "",
       data: null,
-      selected: 0,
+      selectedHolding: 0,
+      selectedPerformance: 0,
+      activeTab: "holdings",
       colors: [
         "#60a5fa",
         "#a78bfa",
@@ -636,12 +927,25 @@
         style: "currency",
         currency: "USD",
         maximumFractionDigits: 0
-      }).format(value);
+      }).format(value || 0);
     };
 
-    const formatPct = (value) => {
-      return `${value.toFixed(1)}%`;
+    const formatCurrencyFull = (value) => {
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        maximumFractionDigits: 2
+      }).format(value || 0);
     };
+
+    const formatPct = (value) => `${(value || 0).toFixed(1)}%`;
+
+    const formatSignedCurrency = (value) => {
+      const abs = formatCurrency(Math.abs(value || 0));
+      return `${value >= 0 ? "+" : "-"}${abs}`;
+    };
+
+    const formatSignedPct = (value) => `${value >= 0 ? "+" : ""}${(value || 0).toFixed(1)}%`;
 
     function showToast(message) {
       const toast = $("toast");
@@ -732,12 +1036,7 @@
         const encrypted = await fetchEncrypted();
         const data = await decryptPayload(encrypted, password);
         state.password = password;
-        state.data = normalizeData(data);
-        state.selected = 0;
-
-        $("lock").style.display = "none";
-        $("dashboard").style.display = "block";
-        render();
+        activateData(data);
         showToast("已解锁");
       } catch (err) {
         error.textContent = "密码错误，或数据文件不可用。";
@@ -745,6 +1044,16 @@
         $("unlockBtn").disabled = false;
         $("unlockBtn").textContent = "解锁";
       }
+    }
+
+    function activateData(data) {
+      state.data = normalizeData(data);
+      state.selectedHolding = 0;
+      state.selectedPerformance = 0;
+
+      $("lock").style.display = "none";
+      $("dashboard").style.display = "block";
+      render();
     }
 
     function normalizeData(data) {
@@ -760,12 +1069,18 @@
 
       return {
         ...data,
-        totalValue: total,
+        equityValue: total,
         holdings
       };
     }
 
     async function refreshData() {
+      if (PREVIEW_MODE) {
+        activateData(EMBEDDED_DATA);
+        showToast("预览数据已重新载入");
+        return;
+      }
+
       if (!state.password) return;
 
       $("refreshBtn").disabled = true;
@@ -775,7 +1090,8 @@
         const encrypted = await fetchEncrypted();
         const data = await decryptPayload(encrypted, state.password);
         state.data = normalizeData(data);
-        state.selected = Math.min(state.selected, state.data.holdings.length - 1);
+        state.selectedHolding = Math.min(state.selectedHolding, state.data.holdings.length - 1);
+        state.selectedPerformance = Math.min(state.selectedPerformance, state.data.performance.items.length - 1);
         render();
         showToast("数据已刷新");
       } catch (err) {
@@ -787,9 +1103,14 @@
     }
 
     function lockPage() {
+      if (PREVIEW_MODE) {
+        showToast("预览模式无需锁定");
+        return;
+      }
+
       state.password = "";
       state.data = null;
-      state.selected = 0;
+      state.selectedHolding = 0;
       $("passwordInput").value = "";
       $("dashboard").style.display = "none";
       $("lock").style.display = "grid";
@@ -822,51 +1143,38 @@
 
     function svgEl(tag, attrs = {}) {
       const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
-      Object.entries(attrs).forEach(([key, value]) => {
-        el.setAttribute(key, value);
-      });
+      Object.entries(attrs).forEach(([key, value]) => el.setAttribute(key, value));
       return el;
     }
 
-    function centerLabel(value) {
+    function centerLabel(value, max = 12) {
       const text = String(value || "");
-      if (text.length <= 12) return text;
-      return `${text.slice(0, 11)}…`;
+      if (text.length <= max) return text;
+      return `${text.slice(0, max - 1)}…`;
     }
 
-    function renderChart() {
-      const svg = $("chart");
-      const holdings = state.data.holdings;
-      const total = state.data.totalValue;
-      const selected = holdings[state.selected];
-
+    function renderDonut(svgId, items, valueGetter, selectedIndex, selectFn, centerRenderer) {
+      const svg = $(svgId);
+      const total = items.reduce((sum, item) => sum + Math.max(0, Number(valueGetter(item))), 0);
       svg.innerHTML = "";
 
       let angle = 0;
 
-      holdings.forEach((item, index) => {
-        const share = item.value / total;
-        const end = angle + share * 360;
-
+      items.forEach((item, index) => {
+        const value = Math.max(0, Number(valueGetter(item)));
+        const end = angle + (total ? value / total * 360 : 0);
         const path = svgEl("path", {
           d: donutPath(180, 180, 154, 92, angle, end),
           fill: state.colors[index % state.colors.length],
           class: [
             "slice",
-            index === state.selected ? "active" : "",
-            index !== state.selected ? "dim" : ""
+            index === selectedIndex ? "active" : "",
+            index !== selectedIndex ? "dim" : ""
           ].join(" ").trim()
         });
 
-        path.addEventListener("mouseenter", () => {
-          state.selected = index;
-          render();
-        });
-
-        path.addEventListener("click", () => {
-          state.selected = index;
-          render();
-        });
+        path.addEventListener("mouseenter", () => selectFn(index));
+        path.addEventListener("click", () => selectFn(index));
 
         svg.appendChild(path);
         angle = end;
@@ -895,59 +1203,111 @@
         "stroke-width": "1"
       }));
 
-      const ticker = svgEl("text", {
-        x: "180",
-        y: "148",
-        fill: "rgba(255,255,255,0.96)",
-        "font-size": "26",
-        "font-weight": "900",
-        "letter-spacing": "-1"
-      });
-      ticker.textContent = selected.ticker;
-
-      const name = svgEl("text", {
-        x: "180",
-        y: "172",
-        fill: "rgba(255,255,255,0.62)",
-        "font-size": "11",
-        "font-weight": "500"
-      });
-      name.textContent = centerLabel(selected.nameZh || selected.name || "");
-
-      const weight = svgEl("text", {
-        x: "180",
-        y: "202",
-        fill: "rgba(255,255,255,0.96)",
-        "font-size": "25",
-        "font-weight": "900",
-        "letter-spacing": "-1"
-      });
-      weight.textContent = formatPct(selected.weight);
-
-      const value = svgEl("text", {
-        x: "180",
-        y: "226",
-        fill: "rgba(255,255,255,0.62)",
-        "font-size": "11",
-        "font-weight": "500"
-      });
-      value.textContent = formatCurrency(selected.value);
-
-      center.appendChild(ticker);
-      center.appendChild(name);
-      center.appendChild(weight);
-      center.appendChild(value);
-
+      centerRenderer(center);
       svg.appendChild(center);
     }
 
-    function renderList() {
+    function addSvgText(parent, text, attrs) {
+      const el = svgEl("text", attrs);
+      el.textContent = text;
+      parent.appendChild(el);
+    }
+
+    function renderHoldingsChart() {
+      const holdings = state.data.holdings;
+      const selected = holdings[state.selectedHolding];
+
+      renderDonut(
+        "holdingsChart",
+        holdings,
+        (item) => item.value,
+        state.selectedHolding,
+        (index) => {
+          state.selectedHolding = index;
+          render();
+        },
+        (center) => {
+          addSvgText(center, selected.ticker, {
+            x: "180",
+            y: "148",
+            fill: "rgba(255,255,255,0.96)",
+            "font-size": "26",
+            "font-weight": "900",
+            "letter-spacing": "-1"
+          });
+          addSvgText(center, centerLabel(selected.nameZh || selected.name || ""), {
+            x: "180",
+            y: "172",
+            fill: "rgba(255,255,255,0.62)",
+            "font-size": "11",
+            "font-weight": "500"
+          });
+          addSvgText(center, formatPct(selected.weight), {
+            x: "180",
+            y: "202",
+            fill: "rgba(255,255,255,0.96)",
+            "font-size": "25",
+            "font-weight": "900",
+            "letter-spacing": "-1"
+          });
+          addSvgText(center, formatCurrency(selected.value), {
+            x: "180",
+            y: "226",
+            fill: "rgba(255,255,255,0.62)",
+            "font-size": "11",
+            "font-weight": "500"
+          });
+        }
+      );
+    }
+
+    function renderGainChart() {
+      const items = state.data.performance.items;
+      const selected = items[state.selectedPerformance];
+
+      renderDonut(
+        "gainChart",
+        items,
+        (item) => Math.abs(item.gain),
+        state.selectedPerformance,
+        (index) => {
+          state.selectedPerformance = index;
+          render();
+        },
+        (center) => {
+          addSvgText(center, centerLabel(selected.label, 10), {
+            x: "180",
+            y: "150",
+            fill: "rgba(255,255,255,0.96)",
+            "font-size": "15",
+            "font-weight": "800"
+          });
+          addSvgText(center, formatSignedCurrency(selected.gain), {
+            x: "180",
+            y: "184",
+            fill: selected.gain >= 0 ? "#86efac" : "#fca5a5",
+            "font-size": "24",
+            "font-weight": "900",
+            "letter-spacing": "-1"
+          });
+          addSvgText(center, formatSignedPct(selected.returnPct), {
+            x: "180",
+            y: "215",
+            fill: "rgba(255,255,255,0.62)",
+            "font-size": "13",
+            "font-weight": "600"
+          });
+        }
+      );
+    }
+
+    function renderHoldingList() {
       const list = $("holdingList");
       list.innerHTML = "";
 
       state.data.holdings.forEach((item, index) => {
         const row = document.createElement("div");
-        row.className = `holding ${index === state.selected ? "active" : ""}`;
+        row.className = `holding ${index === state.selectedHolding ? "active" : ""}`;
         row.innerHTML = `
           <div class="swatch" style="background:${state.colors[index % state.colors.length]}"></div>
           <div class="holding-main">
@@ -964,14 +1324,76 @@
         `;
 
         row.addEventListener("mouseenter", () => {
-          state.selected = index;
+          state.selectedHolding = index;
           render();
         });
 
         row.addEventListener("click", () => {
-          state.selected = index;
+          state.selectedHolding = index;
           render();
         });
+
+        list.appendChild(row);
+      });
+    }
+
+    function renderPerformanceList() {
+      const list = $("performanceList");
+      const items = state.data.performance.items;
+      const maxGain = Math.max(...items.map((item) => Math.abs(item.gain)), 1);
+      list.innerHTML = "";
+
+      items.forEach((item, index) => {
+        const row = document.createElement("div");
+        row.className = `perf-row ${index === state.selectedPerformance ? "active" : ""}`;
+        const pct = Math.max(4, Math.abs(item.gain) / maxGain * 100);
+        row.innerHTML = `
+          <div class="perf-row-top">
+            <div class="perf-name">${escapeHtml(item.label)}</div>
+            <div class="gain ${item.gain < 0 ? "negative" : ""}">${formatSignedCurrency(item.gain)}</div>
+          </div>
+          <div class="perf-row-bottom">
+            <span>本金 ${formatCurrency(item.principal)}</span>
+            <span>当前 ${formatCurrency(item.currentValue)} · ${formatSignedPct(item.returnPct)}</span>
+          </div>
+          <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
+        `;
+
+        row.addEventListener("mouseenter", () => {
+          state.selectedPerformance = index;
+          render();
+        });
+
+        row.addEventListener("click", () => {
+          state.selectedPerformance = index;
+          render();
+        });
+
+        list.appendChild(row);
+      });
+    }
+
+    function renderRanking() {
+      const list = $("rankList");
+      const ranked = [...state.data.holdings]
+        .filter((item) => typeof item.unrealizedGain === "number")
+        .sort((a, b) => b.unrealizedGain - a.unrealizedGain);
+
+      list.innerHTML = "";
+
+      ranked.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "rank-row";
+        row.innerHTML = `
+          <div class="rank-main">
+            <div class="rank-title">${escapeHtml(item.ticker)} ${escapeHtml(item.nameZh || "")}</div>
+            <div class="rank-sub">成本 ${formatCurrency(item.costBasis)} · 当前 ${formatCurrency(item.value)}</div>
+          </div>
+          <div class="rank-gain">
+            <div class="gain ${item.unrealizedGain < 0 ? "negative" : ""}">${formatSignedCurrency(item.unrealizedGain)}</div>
+            <div class="val">${formatSignedPct(item.unrealizedReturnPct)}</div>
+          </div>
+        `;
 
         list.appendChild(row);
       });
@@ -981,17 +1403,40 @@
       const data = state.data;
       const holdings = data.holdings;
       const largest = holdings[0];
+      const perf = data.performance;
 
-      $("meta").textContent = `${data.accountLabel || "Investment account"} · ${data.asOf || "latest"} · ${data.currency || "USD"}`;
-      $("totalValue").textContent = formatCurrency(data.totalValue);
+      $("meta").textContent = `${data.asOf || "latest"} · ${data.currency || "USD"} · CD + 股票 / ETF`;
+      $("equityValue").textContent = formatCurrency(data.equityValue);
       $("largestHolding").textContent = `${largest.ticker} ${formatPct(largest.weight)}`;
       $("holdingCount").textContent = `${holdings.length} 个`;
+
+      $("totalGain").textContent = formatSignedCurrency(perf.totalGain);
+      $("totalGain").className = `metric-value gain ${perf.totalGain < 0 ? "negative" : ""}`;
+      $("totalGainSub").textContent = `本金 ${formatCurrency(perf.totalPrincipal)}，当前 ${formatCurrency(perf.totalCurrentValue)}`;
+      $("totalReturn").textContent = formatSignedPct(perf.totalReturnPct);
+      $("totalReturn").className = `metric-value gain ${perf.totalReturnPct < 0 ? "negative" : ""}`;
+      $("totalCurrent").textContent = formatCurrency(perf.totalCurrentValue);
+      $("totalPrincipal").textContent = formatCurrency(perf.totalPrincipal);
+      $("gainSourceCount").textContent = `${perf.items.length} 类`;
+      $("perfDate").textContent = data.asOf || "latest";
+    }
+
+    function switchTab(tab) {
+      state.activeTab = tab;
+      $("holdingsTab").classList.toggle("active", tab === "holdings");
+      $("performanceTab").classList.toggle("active", tab === "performance");
+      $("holdingsPanel").classList.toggle("active", tab === "holdings");
+      $("performancePanel").classList.toggle("active", tab === "performance");
     }
 
     function render() {
-      renderChart();
-      renderList();
       renderSummary();
+      renderHoldingsChart();
+      renderHoldingList();
+      renderGainChart();
+      renderPerformanceList();
+      renderRanking();
+      switchTab(state.activeTab);
     }
 
     function escapeHtml(value) {
@@ -1007,12 +1452,20 @@
     $("refreshBtn").addEventListener("click", refreshData);
     $("lockBtn").addEventListener("click", lockPage);
 
+    $("holdingsTab").addEventListener("click", () => switchTab("holdings"));
+    $("performanceTab").addEventListener("click", () => switchTab("performance"));
+
     $("passwordInput").addEventListener("keydown", (event) => {
       if (event.key === "Enter") unlock();
     });
 
     window.addEventListener("load", () => {
-      $("passwordInput").focus();
+      if (PREVIEW_MODE && EMBEDDED_DATA) {
+        activateData(EMBEDDED_DATA);
+        showToast("预览模式");
+      } else {
+        $("passwordInput").focus();
+      }
     });
   </script>
 </body>

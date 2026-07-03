@@ -843,12 +843,12 @@
             <div class="metric-card">
               <div class="metric-label">累计收益率</div>
               <div id="totalReturn" class="metric-value"></div>
-              <div class="metric-sub">按确认后的本金口径计算</div>
+              <div class="metric-sub">基于场内资金本金与当前市值计算</div>
             </div>
             <div class="metric-card">
               <div class="metric-label">当前展示资产</div>
               <div id="totalCurrent" class="metric-value"></div>
-              <div class="metric-sub">美国银行 CD + Robinhood 股票 / ETF</div>
+              <div class="metric-sub">美国银行 CD + 股票 / ETF</div>
             </div>
           </div>
 
@@ -884,8 +884,8 @@
 
           <section class="ranking-card">
             <div class="list-head">
-              <strong>股票 / ETF 内部未实现收益</strong>
-              <span>按券商成本基础估算</span>
+              <strong>股票 / ETF 浮盈</strong>
+              <span>按持仓成本基础估算</span>
             </div>
             <div id="rankList" class="rank-list"></div>
           </section>
@@ -1340,13 +1340,13 @@
     function renderPerformanceList() {
       const list = $("performanceList");
       const items = state.data.performance.items;
-      const maxGain = Math.max(...items.map((item) => Math.abs(item.gain)), 1);
       list.innerHTML = "";
 
       items.forEach((item, index) => {
         const row = document.createElement("div");
         row.className = `perf-row ${index === state.selectedPerformance ? "active" : ""}`;
-        const pct = Math.max(4, Math.abs(item.gain) / maxGain * 100);
+        const gainShare = item.currentValue ? Math.abs(item.gain) / Math.abs(item.currentValue) * 100 : 0;
+        const pct = item.gain === 0 ? 0 : Math.max(4, Math.min(100, gainShare));
         row.innerHTML = `
           <div class="perf-row-top">
             <div class="perf-name">${escapeHtml(item.label)}</div>
@@ -1356,7 +1356,7 @@
             <span>本金 ${formatCurrency(item.principal)}</span>
             <span>当前 ${formatCurrency(item.currentValue)} · ${formatSignedPct(item.returnPct)}</span>
           </div>
-          <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
+          <div class="bar-track"><div class="bar-fill ${item.gain < 0 ? "negative" : ""}" style="width:${pct}%"></div></div>
         `;
 
         row.addEventListener("mouseenter", () => {

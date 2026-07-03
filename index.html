@@ -771,12 +771,10 @@
     <section class="glass">
       <div id="lock" class="lock">
         <div class="lock-card">
-          <div class="eyebrow"><span class="dot"></span> encrypted portfolio</div>
-          <h1>持仓与收益</h1>
-          <p>输入访问密码后，页面会在本地解密数据并渲染图表。密码不会上传，也不会写入 GitHub。</p>
+          <h1>请输入密码</h1>
           <div class="input-row">
-            <input id="passwordInput" type="password" autocomplete="current-password" placeholder="输入访问密码" />
-            <button id="unlockBtn">解锁</button>
+            <input id="passwordInput" type="password" autocomplete="current-password" placeholder="请输入密码" />
+            <button id="unlockBtn">进入</button>
           </div>
           <div id="lockError" class="error"></div>
         </div>
@@ -1373,13 +1371,57 @@
       });
     }
 
+    function numericOrNull(value) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function holdingGain(item) {
+      const explicitGain = numericOrNull(item.unrealizedGain);
+      if (explicitGain !== null) return explicitGain;
+
+      const value = numericOrNull(item.value);
+      const costBasis = numericOrNull(item.costBasis);
+      if (value === null || costBasis === null) return null;
+
+      return value - costBasis;
+    }
+
+    function holdingReturnPct(item, gain) {
+      const explicitPct = numericOrNull(item.unrealizedReturnPct);
+      if (explicitPct !== null) return explicitPct;
+
+      const costBasis = numericOrNull(item.costBasis);
+      if (!costBasis) return null;
+
+      return gain / costBasis * 100;
+    }
+
     function renderRanking() {
       const list = $("rankList");
       const ranked = [...state.data.holdings]
-        .filter((item) => typeof item.unrealizedGain === "number")
-        .sort((a, b) => b.unrealizedGain - a.unrealizedGain);
+        .map((item) => {
+          const gain = holdingGain(item);
+          const returnPct = gain === null ? null : holdingReturnPct(item, gain);
+          return { ...item, computedGain: gain, computedReturnPct: returnPct };
+        })
+        .filter((item) => item.computedGain !== null)
+        .sort((a, b) => b.computedGain - a.computedGain);
 
       list.innerHTML = "";
+
+      if (!ranked.length) {
+        const empty = document.createElement("div");
+        empty.className = "rank-row";
+        empty.innerHTML = `
+          <div class="rank-main">
+            <div class="rank-title">暂无浮盈明细</div>
+            <div class="rank-sub">缺少成本基础数据时不会显示该模块</div>
+          </div>
+        `;
+        list.appendChild(empty);
+        return;
+      }
 
       ranked.forEach((item) => {
         const row = document.createElement("div");
@@ -1390,8 +1432,8 @@
             <div class="rank-sub">成本 ${formatCurrency(item.costBasis)} · 当前 ${formatCurrency(item.value)}</div>
           </div>
           <div class="rank-gain">
-            <div class="gain ${item.unrealizedGain < 0 ? "negative" : ""}">${formatSignedCurrency(item.unrealizedGain)}</div>
-            <div class="val">${formatSignedPct(item.unrealizedReturnPct)}</div>
+            <div class="gain ${item.computedGain < 0 ? "negative" : ""}">${formatSignedCurrency(item.computedGain)}</div>
+            <div class="val">${item.computedReturnPct === null ? "–" : formatSignedPct(item.computedReturnPct)}</div>
           </div>
         `;
 

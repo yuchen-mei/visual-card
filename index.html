@@ -346,6 +346,7 @@
       grid-template-columns: minmax(0, 1fr) minmax(300px, 0.48fr);
       gap: 18px;
       align-items: start;
+      min-width: 0;
     }
 
     .metric-grid {
@@ -365,6 +366,7 @@
       border: 1px solid var(--line);
       border-radius: var(--card-radius);
       background: var(--surface);
+      min-width: 0;
     }
 
     .chart-card {
@@ -376,6 +378,8 @@
 
     .chart-wrap {
       min-height: 470px;
+      width: 100%;
+      min-width: 0;
       display: grid;
       place-items: center;
     }
@@ -388,10 +392,12 @@
     .trade-chart-wrap {
       min-height: 520px;
       place-items: stretch;
+      overflow: hidden;
     }
 
     svg {
       width: min(100%, 500px);
+      max-width: 100%;
       height: auto;
       display: block;
       overflow: visible;
@@ -399,8 +405,10 @@
 
     svg.trade-chart {
       width: 100%;
+      min-width: 0;
       max-width: none;
-      align-self: stretch;
+      align-self: auto;
+      overflow: hidden;
     }
 
     .slice-group {
@@ -1111,8 +1119,28 @@
         min-height: 380px;
       }
 
+      .trade-chart-card {
+        min-height: auto;
+        overflow: hidden;
+      }
+
+      .trade-chart-wrap {
+        width: 100%;
+        min-height: 0;
+        height: clamp(190px, 52vw, 300px);
+        overflow: hidden;
+        place-items: stretch;
+      }
+
       svg {
         width: min(100%, 410px);
+      }
+
+      svg.trade-chart {
+        width: 100%;
+        height: 100%;
+        max-width: 100%;
+        overflow: hidden;
       }
 
       .rank-list {
@@ -1191,10 +1219,6 @@
 
       .chart-wrap {
         min-height: 320px;
-      }
-
-      .trade-chart-wrap {
-        min-height: 360px;
       }
 
       svg {

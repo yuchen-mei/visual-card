@@ -345,7 +345,7 @@
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(300px, 0.48fr);
       gap: 18px;
-      align-items: stretch;
+      align-items: start;
     }
 
     .metric-grid {
@@ -848,6 +848,40 @@
       border: 1px solid var(--line);
       border-radius: var(--card-radius);
       background: var(--surface-soft);
+    }
+
+    @media (min-width: 1081px) {
+      .trade-chart-card {
+        position: sticky;
+        top: 18px;
+        align-self: start;
+      }
+
+      .trade-chart-wrap {
+        min-height: clamp(430px, calc(100vh - 280px), 520px);
+      }
+
+      .trade-side-card {
+        display: flex;
+        flex-direction: column;
+        max-height: min(820px, calc(100vh - 118px));
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .trade-side-card .list-head,
+      .ticker-selector,
+      .trade-detail {
+        flex: 0 0 auto;
+      }
+
+      .trade-list {
+        min-height: 0;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding-right: 4px;
+        margin-right: -4px;
+      }
     }
 
     .trade-detail-head {

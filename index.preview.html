@@ -2027,6 +2027,28 @@
       return centerLabel(label, 8);
     }
 
+    function holdingCenterLabel(item) {
+      const ticker = String(item.ticker || "").toUpperCase();
+      const explicit = {
+        QQQ: "纳斯达克100",
+        SPY: "标普500",
+        TSM: "台积电"
+      };
+      if (explicit[ticker]) return explicit[ticker];
+
+      const raw = String(item.nameZh || item.name || ticker);
+      const cleaned = raw
+        .replace(/景顺/g, "")
+        .replace(/ETF/gi, "")
+        .replace(/ADR/gi, "")
+        .replace(/A 类/g, "A")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      if (/^[A-Za-z0-9 .,&-]+$/.test(cleaned) && cleaned.length > 10) return ticker;
+      return centerLabel(cleaned || ticker, 10);
+    }
+
     function hexToRgb(hex) {
       const normalized = String(hex).replace("#", "");
       if (normalized.length !== 6) return "0, 200, 5";
@@ -2198,7 +2220,7 @@
             "font-weight": "840",
             "letter-spacing": "0"
           });
-          addSvgText(center, centerLabel(selected.nameZh || selected.name || ""), {
+          addSvgText(center, holdingCenterLabel(selected), {
             id: "holdingsChartSubtitle",
             x: "180",
             y: "172",
@@ -2274,7 +2296,7 @@
 
       const updateCenter = () => {
         setSvgText("holdingsChartTitle", selected.ticker);
-        setSvgText("holdingsChartSubtitle", centerLabel(selected.nameZh || selected.name || ""));
+        setSvgText("holdingsChartSubtitle", holdingCenterLabel(selected));
         setSvgText("holdingsChartPct", formatPct(selected.weight));
         setSvgText("holdingsChartValue", formatCurrency(selected.value));
       };

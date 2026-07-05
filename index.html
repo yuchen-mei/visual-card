@@ -2279,7 +2279,7 @@
       if (!date) return "";
       const parts = date.split("-");
       if (parts.length < 3) return date;
-      return `${parts[1]}/${parts[2]}`;
+      return `${parts[0]}/${parts[1]}/${parts[2]}`;
     }
 
     function currentTradingItem() {

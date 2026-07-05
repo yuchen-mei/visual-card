@@ -1467,7 +1467,7 @@
       selectedPerformance: 0,
       selectedTradingTicker: "",
       selectedTrade: 0,
-      activeTab: "trading",
+      activeTab: "holdings",
       colors: [
         "#00c805",
         "#00a76f",
@@ -1631,6 +1631,7 @@
       state.selectedPerformance = 0;
       state.selectedTradingTicker = state.data.trading[0]?.ticker || "";
       state.selectedTrade = 0;
+      state.activeTab = "holdings";
 
       $("lock").style.display = "none";
       $("dashboard").style.display = "block";
@@ -2348,10 +2349,7 @@
       const chartTop = padding.top;
       const chartBottom = height - padding.bottom;
       const times = item.prices.map((price) => price.time);
-      const closes = [
-        ...item.prices.map((price) => price.close),
-        ...item.orders.map((order) => order.price)
-      ].filter((value) => Number.isFinite(value));
+      const closes = item.prices.map((price) => price.close).filter((value) => Number.isFinite(value));
       const minTime = Math.min(...times);
       const maxTime = Math.max(...times);
       const minClose = Math.min(...closes);
@@ -2418,7 +2416,7 @@
       item.orders.forEach((order, index) => {
         const close = nearestPrice(item.prices, order.time);
         const markerX = x(order.time);
-        const markerY = y(order.price || close.close);
+        const markerY = y(close?.close ?? order.price);
         const isSell = order.side === "sell";
         const marker = svgEl("g", {
           class: `trade-marker ${index === state.selectedTrade ? "active" : "dim"}`,

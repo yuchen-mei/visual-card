@@ -819,9 +819,10 @@
     }
 
     .ticker-chip-sub {
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      white-space: normal;
+      overflow: visible;
+      text-overflow: clip;
+      overflow-wrap: anywhere;
     }
 
     .ticker-chip-return {

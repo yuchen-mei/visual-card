@@ -1488,7 +1488,7 @@
       selectedHolding: 0,
       selectedPerformance: 0,
       selectedTradingTicker: "",
-      selectedTrade: 0,
+      selectedTrade: -1,
       activeTab: "holdings",
       colors: [
         "#00c805",
@@ -1652,7 +1652,7 @@
       state.selectedHolding = 0;
       state.selectedPerformance = 0;
       state.selectedTradingTicker = state.data.trading[0]?.ticker || "";
-      state.selectedTrade = 0;
+      state.selectedTrade = -1;
       state.activeTab = "holdings";
 
       $("lock").style.display = "none";
@@ -1854,7 +1854,7 @@
         state.selectedTradingTicker = state.data.trading.some((item) => item.ticker === state.selectedTradingTicker)
           ? state.selectedTradingTicker
           : state.data.trading[0]?.ticker || "";
-        state.selectedTrade = 0;
+        state.selectedTrade = -1;
         render();
         hydratePublicMarketPrices();
         showToast("数据已刷新");
@@ -2435,13 +2435,15 @@
       svg.appendChild(svgEl("path", { d: line, class: "price-path" }));
 
       const markerLayer = svgEl("g");
+      const hasTradeSelection = state.selectedTrade >= 0 && state.selectedTrade < item.orders.length;
       item.orders.forEach((order, index) => {
         const close = nearestPrice(item.prices, order.time);
         const markerX = x(order.time);
         const markerY = y(close?.close ?? order.price);
         const isSell = order.side === "sell";
+        const active = index === state.selectedTrade;
         const marker = svgEl("g", {
-          class: `trade-marker ${index === state.selectedTrade ? "active" : "dim"}`,
+          class: `trade-marker ${active ? "active" : hasTradeSelection ? "dim" : ""}`,
           transform: `translate(${markerX.toFixed(2)} ${markerY.toFixed(2)})`,
           tabindex: "0"
         });
@@ -2481,7 +2483,7 @@
       });
       svg.appendChild(markerLayer);
 
-      const callout = svgEl("g", { id: "tradeCallout" });
+      const callout = svgEl("g", { id: "tradeCallout", display: "none" });
       callout.appendChild(svgEl("rect", {
         x: "0",
         y: "0",
@@ -2549,13 +2551,26 @@
     function updateTradeSelection() {
       const item = currentTradingItem();
       if (!item) return;
-      const order = item.orders[state.selectedTrade] || item.orders[0];
-      if (!order) return;
-      state.selectedTrade = Math.max(0, item.orders.indexOf(order));
-      const isSell = order.side === "sell";
+      const hasSelection = state.selectedTrade >= 0 && state.selectedTrade < item.orders.length;
+      const detail = $("tradeDetail");
+      const svg = $("tradeChart");
+      const callout = $("tradeCallout");
 
-      updateRowSelection("tradeList", ".trade-row", state.selectedTrade);
-      $("tradeDetail").innerHTML = `
+      updateRowSelection("tradeList", ".trade-row", hasSelection ? state.selectedTrade : -1);
+      if (!hasSelection) {
+        detail.innerHTML = "";
+        detail.hidden = true;
+        svg?.querySelectorAll(".trade-marker").forEach((marker) => {
+          marker.classList.remove("active", "dim");
+        });
+        callout?.setAttribute("display", "none");
+        return;
+      }
+
+      const order = item.orders[state.selectedTrade];
+      const isSell = order.side === "sell";
+      detail.hidden = false;
+      detail.innerHTML = `
         <div class="trade-detail-head">
           <div class="trade-detail-title">${escapeHtml(item.ticker)} ${isSell ? "卖出" : "买入"}</div>
           <div class="trade-detail-side ${isSell ? "sell" : ""}">${formatCurrencyFull(order.price)}</div>
@@ -2563,7 +2578,6 @@
         <div class="trade-detail-text">${formatChartDate(order.date)} · ${order.shares} 股 · ${isSell ? "降低仓位" : "增加仓位"}</div>
       `;
 
-      const svg = $("tradeChart");
       svg.querySelectorAll(".trade-marker").forEach((marker) => {
         const active = Number(marker.dataset.index) === state.selectedTrade;
         marker.classList.toggle("active", active);
@@ -2571,13 +2585,13 @@
       });
 
       const marker = svg.querySelector(`.trade-marker[data-index="${state.selectedTrade}"]`);
-      const callout = $("tradeCallout");
       if (!marker || !callout) return;
 
       const markerX = Number(marker.dataset.x);
       const markerY = Number(marker.dataset.y);
       const calloutX = Math.max(66, Math.min(668, markerX + 18));
       const calloutY = Math.max(18, Math.min(330, markerY - 64));
+      callout.removeAttribute("display");
       callout.setAttribute("transform", `translate(${calloutX.toFixed(2)} ${calloutY.toFixed(2)})`);
       setSvgText("tradeCalloutTitle", `${isSell ? "卖出" : "买入"} ${order.shares} 股`);
       setSvgText("tradeCalloutSub", `${formatChartDate(order.date)} · ${formatCurrencyFull(order.price)}`);
@@ -2586,7 +2600,7 @@
     function selectTradingTicker(ticker) {
       if (state.selectedTradingTicker === ticker) return;
       state.selectedTradingTicker = ticker;
-      state.selectedTrade = 0;
+      state.selectedTrade = -1;
       renderTrading();
     }
 

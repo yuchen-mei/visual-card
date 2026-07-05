@@ -1423,7 +1423,7 @@
           <section class="ranking-card">
             <div class="list-head">
               <strong>股票 / ETF 浮盈</strong>
-              <span>按持仓成本基础估算</span>
+              <span>按持仓成本基础</span>
             </div>
             <div id="rankList" class="rank-list"></div>
           </section>
@@ -1673,13 +1673,113 @@
       });
 
       const trading = normalizeTradingData(data.trading, holdings, data.asOf);
+      const performance = normalizePerformanceData(data.performance, holdings);
 
       return {
         ...data,
         equityValue: total,
         holdings,
+        performance,
         trading
       };
+    }
+
+    function normalizePerformanceData(performance, holdings) {
+      const perf = { ...(performance || {}) };
+      const items = Array.isArray(perf.items)
+        ? perf.items.map((item) => normalizePerformanceItem(item))
+        : [];
+      const totalGain = numericOrNull(perf.totalGain);
+
+      if (
+        totalGain === null ||
+        !items.length ||
+        items.some((item) => item.label === "利息及已止盈收益")
+      ) {
+        return { ...perf, items };
+      }
+
+      const stockIndex = items.findIndex(isStockEtfPerformanceItem);
+      const stockSummary = summarizeTradableHoldingPerformance(holdings);
+      if (stockIndex < 0 || !stockSummary.complete) {
+        return { ...perf, items };
+      }
+
+      const otherGain = items.reduce((sum, item, index) => {
+        if (index === stockIndex) return sum;
+        return sum + (numericOrNull(item.gain) || 0);
+      }, 0);
+      const residualGain = totalGain - stockSummary.gain - otherGain;
+      if (!Number.isFinite(residualGain) || Math.abs(residualGain) < 1) {
+        return { ...perf, items };
+      }
+
+      const nextItems = [...items];
+      nextItems[stockIndex] = {
+        ...nextItems[stockIndex],
+        label: "股票 / ETF 浮盈",
+        principal: stockSummary.principal,
+        currentValue: stockSummary.currentValue,
+        gain: stockSummary.gain,
+        returnPct: calculateReturnPct(stockSummary.gain, stockSummary.principal)
+      };
+      nextItems.splice(stockIndex + 1, 0, {
+        label: "利息及已止盈收益",
+        principal: stockSummary.principal,
+        currentValue: stockSummary.principal + residualGain,
+        gain: residualGain,
+        returnPct: calculateReturnPct(residualGain, stockSummary.principal),
+        sharedPrincipal: true
+      });
+
+      return { ...perf, items: nextItems };
+    }
+
+    function normalizePerformanceItem(item) {
+      return {
+        ...item,
+        principal: Number(item.principal || 0),
+        currentValue: Number(item.currentValue || 0),
+        gain: Number(item.gain || 0),
+        returnPct: numericOrNull(item.returnPct)
+      };
+    }
+
+    function isStockEtfPerformanceItem(item) {
+      const label = String(item.label || "").toLowerCase();
+      return (label.includes("股票") || label.includes("etf") || label.includes("stock")) && !label.includes("cd");
+    }
+
+    function summarizeTradableHoldingPerformance(holdings) {
+      let currentValue = 0;
+      let principal = 0;
+      let gain = 0;
+      let count = 0;
+
+      for (const item of holdings) {
+        if (!isTradableHolding(item)) continue;
+        const value = numericOrNull(item.value);
+        const itemGain = holdingGain(item);
+        if (value === null || itemGain === null) {
+          return { complete: false };
+        }
+
+        currentValue += value;
+        gain += itemGain;
+        principal += numericOrNull(item.costBasis) ?? value - itemGain;
+        count += 1;
+      }
+
+      return {
+        complete: count > 0,
+        currentValue,
+        principal,
+        gain
+      };
+    }
+
+    function calculateReturnPct(gain, principal) {
+      return principal ? gain / principal * 100 : null;
     }
 
     function isTradableHolding(item) {
@@ -1915,7 +2015,15 @@
     function centerLabel(value, max = 12) {
       const text = String(value || "");
       if (text.length <= max) return text;
-      return `${text.slice(0, max - 1)}…`;
+      return text.slice(0, max);
+    }
+
+    function performanceCenterLabel(item) {
+      const label = String(item.label || "");
+      if (label === "利息及已止盈收益") return "利息/止盈";
+      if (isStockEtfPerformanceItem(item)) return "股票/ETF";
+      if (label.toLowerCase().includes("cd")) return "CD";
+      return centerLabel(label, 8);
     }
 
     function hexToRgb(hex) {
@@ -2129,7 +2237,7 @@
         state.selectedPerformance,
         selectPerformance,
         (center) => {
-          addSvgText(center, centerLabel(selected.label, 10), {
+          addSvgText(center, performanceCenterLabel(selected), {
             id: "gainChartTitle",
             x: "180",
             y: "150",
@@ -2146,7 +2254,7 @@
             "font-weight": "840",
             "letter-spacing": "0"
           });
-          addSvgText(center, formatSignedPct(selected.returnPct), {
+          addSvgText(center, formatPerformanceReturn(selected), {
             id: "gainChartPct",
             x: "180",
             y: "215",
@@ -2183,11 +2291,11 @@
       updateRowSelection("performanceList", ".perf-row", state.selectedPerformance);
 
       const updateCenter = () => {
-        setSvgText("gainChartTitle", centerLabel(selected.label, 10));
+        setSvgText("gainChartTitle", performanceCenterLabel(selected));
         setSvgText("gainChartValue", formatSignedCurrency(selected.gain), {
           fill: selected.gain >= 0 ? "#00a53c" : "#ff5000"
         });
-        setSvgText("gainChartPct", formatSignedPct(selected.returnPct));
+        setSvgText("gainChartPct", formatPerformanceReturn(selected));
       };
 
       if (animate) {
@@ -2207,6 +2315,16 @@
       if (state.selectedPerformance === index) return;
       state.selectedPerformance = index;
       updatePerformanceSelection(true);
+    }
+
+    function formatPerformanceReturn(item) {
+      return item.returnPct === null ? "" : formatSignedPct(item.returnPct);
+    }
+
+    function formatPerformanceCurrent(item) {
+      const pct = formatPerformanceReturn(item);
+      if (item.sharedPrincipal) return pct ? `收益率 ${pct}` : "收益率 –";
+      return pct ? `当前 ${formatCurrency(item.currentValue)} · ${pct}` : `当前 ${formatCurrency(item.currentValue)}`;
     }
 
     function renderHoldingList() {
@@ -2262,8 +2380,8 @@
             <div class="gain ${item.gain < 0 ? "negative" : ""}">${formatSignedCurrency(item.gain)}</div>
           </div>
           <div class="perf-row-bottom">
-            <span>本金 ${formatCurrency(item.principal)}</span>
-            <span>当前 ${formatCurrency(item.currentValue)} · ${formatSignedPct(item.returnPct)}</span>
+            <span>${item.sharedPrincipal ? "共享本金" : "本金"} ${formatCurrency(item.principal)}</span>
+            <span>${formatPerformanceCurrent(item)}</span>
           </div>
           <div class="bar-track"><div class="bar-fill ${item.gain < 0 ? "negative" : ""}" style="width:${pct}%; --accent:${accent}"></div></div>
         `;

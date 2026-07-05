@@ -775,6 +775,9 @@
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 12px;
       align-items: center;
+      flex: 0 0 auto;
+      min-height: 64px;
+      width: 100%;
     }
 
     .ticker-chip:hover,
@@ -907,10 +910,13 @@
       .trade-list {
         flex: 1 1 auto;
         min-height: clamp(180px, 24vh, 260px);
+        min-width: 0;
+        overflow-x: hidden;
         overflow-y: auto;
         overscroll-behavior: contain;
         padding-right: 4px;
         margin-right: -4px;
+        scrollbar-gutter: stable;
       }
     }
 

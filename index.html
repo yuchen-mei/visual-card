@@ -2350,6 +2350,18 @@
       return pct ? `当前 ${formatCurrency(item.currentValue)} · ${pct}` : `当前 ${formatCurrency(item.currentValue)}`;
     }
 
+    function formatHoldingType(type) {
+      const value = String(type || "").trim().toLowerCase();
+      const labels = {
+        equity: "股票",
+        stock: "股票",
+        etf: "ETF",
+        cash: "现金",
+        cd: "CD"
+      };
+      return labels[value] || type || "持仓";
+    }
+
     function renderHoldingList() {
       const list = $("holdingList");
       list.innerHTML = "";
@@ -2366,7 +2378,7 @@
           <div class="holding-main">
             <div class="ticker-line">
               <span class="ticker">${escapeHtml(item.ticker)}</span>
-              <span class="kind">${escapeHtml(item.type || "持仓")}</span>
+              <span class="kind">${escapeHtml(formatHoldingType(item.type))}</span>
             </div>
             <div class="zh">${escapeHtml(item.nameZh || item.name || "")}</div>
           </div>

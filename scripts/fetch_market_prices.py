@@ -14,6 +14,12 @@ def parse_date(value):
     return datetime.strptime(value, "%Y-%m-%d").date()
 
 
+def resolve_date(value):
+    if value == "today":
+        return datetime.now().date().isoformat()
+    return value
+
+
 def unix_time(value):
     return int(time.mktime(parse_date(value).timetuple()))
 
@@ -76,19 +82,25 @@ def main():
     parser.add_argument("--input", default="market.prices.json", help="Existing market price JSON used for ticker/date ranges.")
     parser.add_argument("--output", default="market.prices.json", help="Output market price JSON.")
     parser.add_argument("--tickers", help="Comma-separated tickers. Requires --start and --end.")
-    parser.add_argument("--start", help="YYYY-MM-DD start date.")
-    parser.add_argument("--end", help="YYYY-MM-DD end date.")
+    parser.add_argument("--start", help="YYYY-MM-DD start date, or 'today'.")
+    parser.add_argument("--end", help="YYYY-MM-DD end date, or 'today'.")
     parser.add_argument("--source", default="yahoo-chart", help="Source label written to output JSON.")
     args = parser.parse_args()
 
     input_path = Path(args.input)
     output_path = Path(args.output)
+    start = resolve_date(args.start)
+    end = resolve_date(args.end)
     ranges, existing = ranges_from_existing(input_path)
 
     if args.tickers:
-        if not args.start or not args.end:
+        if not start or not end:
             parser.error("--tickers requires --start and --end")
-        ranges = {ticker.strip().upper(): (args.start, args.end) for ticker in args.tickers.split(",") if ticker.strip()}
+        ranges = {ticker.strip().upper(): (start, end) for ticker in args.tickers.split(",") if ticker.strip()}
+    elif start or end:
+        # Move one edge of every existing range and keep the other, so refreshing
+        # to today does not disturb each ticker's own history start date.
+        ranges = {ticker: (start or old_start, end or old_end) for ticker, (old_start, old_end) in ranges.items()}
 
     if not ranges:
         raise SystemExit("No ticker/date ranges found. Provide --tickers, --start, and --end.")

@@ -1,0 +1,48 @@
+name: Update market prices
+
+on:
+  schedule:
+    # 6:30 PM PST / 7:30 PM PDT, safely after the US market close.
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-market-prices
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Fetch and validate daily closes
+        run: python scripts/fetch_market_prices.py
+
+      - name: Check generated file
+        run: |
+          python -m json.tool market.prices.json > /dev/null
+          git diff --check
+
+      - name: Commit updated prices
+        run: |
+          if git diff --quiet -- market.prices.json; then
+            echo "Market prices are already up to date."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add market.prices.json
+          git commit -m "Update market prices"
+          git push

@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import sys
+import math
+import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+
+DEFAULT_CONFIG = Path(__file__).with_name("market_price_ranges.json")
 
 
 def parse_date(value):
@@ -16,16 +20,29 @@ def parse_date(value):
 
 def resolve_date(value):
     if value == "today":
-        return datetime.now().date().isoformat()
-    return value
+        return datetime.now(timezone.utc).date().isoformat()
+    return parse_date(value).isoformat()
 
 
 def unix_time(value):
-    return int(time.mktime(parse_date(value).timetuple()))
+    midnight = datetime.combine(parse_date(value), datetime.min.time(), tzinfo=timezone.utc)
+    return int(midnight.timestamp())
 
 
-def yahoo_symbol(ticker):
-    return ticker.upper()
+def load_ranges(path):
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError(f"{path} must contain a non-empty object of ticker/start-date pairs")
+
+    ranges = {}
+    for ticker, start in payload.items():
+        normalized_ticker = ticker.strip().upper()
+        if not normalized_ticker or normalized_ticker != ticker:
+            raise ValueError(f"Invalid ticker in {path}: {ticker!r}")
+        if not isinstance(start, str):
+            raise ValueError(f"Start date for {ticker} must be a string")
+        ranges[ticker] = parse_date(start).isoformat()
+    return ranges
 
 
 def fetch_yahoo_daily(ticker, start, end):
@@ -36,13 +53,13 @@ def fetch_yahoo_daily(ticker, start, end):
         "events": "history",
         "includeAdjustedClose": "true",
     })
-    url = f"https://query2.finance.yahoo.com/v8/finance/chart/{yahoo_symbol(ticker)}?{params}"
+    url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?{params}"
     request = Request(url, headers={
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": "visual-card-market-price-updater/1.0",
         "Accept": "application/json",
     })
 
-    with urlopen(request, timeout=20) as response:
+    with urlopen(request, timeout=30) as response:
         payload = json.loads(response.read().decode("utf-8"))
 
     result = (payload.get("chart", {}).get("result") or [None])[0]
@@ -60,77 +77,151 @@ def fetch_yahoo_daily(ticker, start, end):
         date = datetime.fromtimestamp(timestamp, tz=timezone.utc).date().isoformat()
         if start <= date <= end:
             rows.append({"date": date, "close": round(float(close), 6)})
-
-    if len(rows) < 2:
-        raise RuntimeError(f"Too few daily prices for {ticker}")
     return rows
 
 
-def ranges_from_existing(path):
-    data = json.loads(path.read_text()) if path.exists() else {}
-    prices = data.get("prices") or {}
-    ranges = {}
-    for ticker, rows in prices.items():
-        rows = [row for row in rows if row.get("date")]
-        if rows:
-            ranges[ticker] = (rows[0]["date"], rows[-1]["date"])
-    return ranges, data
+def fetch_with_retries(ticker, start, end, retries):
+    for attempt in range(1, retries + 1):
+        try:
+            return fetch_yahoo_daily(ticker, start, end)
+        except (HTTPError, URLError, TimeoutError, RuntimeError, ValueError) as exc:
+            if attempt == retries:
+                raise RuntimeError(f"{ticker}: {exc}") from exc
+            delay = 2 ** (attempt - 1)
+            print(f"{ticker}: fetch failed ({exc}); retrying in {delay}s")
+            time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+def validate_prices(ranges, prices, end):
+    if set(prices) != set(ranges):
+        raise ValueError("Fetched ticker set does not match configured ticker set")
+
+    end_date = parse_date(end)
+    latest_dates = set()
+    for ticker, start in ranges.items():
+        rows = prices[ticker]
+        minimum_rows = max(2, (end_date - parse_date(start)).days // 2)
+        if len(rows) < minimum_rows:
+            raise ValueError(
+                f"{ticker}: only {len(rows)} rows; expected at least {minimum_rows}. "
+                "Refusing to replace the complete history with sparse data."
+            )
+
+        dates = [row.get("date") for row in rows]
+        if dates != sorted(dates) or len(dates) != len(set(dates)):
+            raise ValueError(f"{ticker}: dates must be sorted and unique")
+        if dates[0] != start:
+            raise ValueError(f"{ticker}: history starts at {dates[0]}, expected {start}")
+
+        for row in rows:
+            if set(row) != {"date", "close"}:
+                raise ValueError(f"{ticker}: every row must contain only date and close")
+            close = row["close"]
+            if isinstance(close, bool) or not isinstance(close, (int, float)):
+                raise ValueError(f"{ticker} {row['date']}: close must be numeric")
+            if not math.isfinite(close) or close <= 0:
+                raise ValueError(f"{ticker} {row['date']}: close must be finite and positive")
+
+        latest = parse_date(dates[-1])
+        if latest > end_date:
+            raise ValueError(f"{ticker}: latest date {latest} is after requested end date {end}")
+        if end_date - latest > timedelta(days=7):
+            raise ValueError(f"{ticker}: latest date {latest} is unexpectedly stale")
+        latest_dates.add(dates[-1])
+
+    if len(latest_dates) != 1:
+        raise ValueError(f"Tickers have inconsistent latest dates: {sorted(latest_dates)}")
+    return latest_dates.pop()
+
+
+def load_existing(path):
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def write_json_atomically(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            json.dump(payload, temporary_file, ensure_ascii=False, indent=2)
+            temporary_file.write("\n")
+            temporary_path = Path(temporary_file.name)
+        temporary_path.replace(path)
+    finally:
+        if temporary_path and temporary_path.exists():
+            temporary_path.unlink()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fetch public daily close prices for market.prices.json.")
-    parser.add_argument("--input", default="market.prices.json", help="Existing market price JSON used for ticker/date ranges.")
-    parser.add_argument("--output", default="market.prices.json", help="Output market price JSON.")
-    parser.add_argument("--tickers", help="Comma-separated tickers. Requires --start and --end.")
-    parser.add_argument("--start", help="YYYY-MM-DD start date, or 'today'.")
-    parser.add_argument("--end", help="YYYY-MM-DD end date, or 'today'.")
-    parser.add_argument("--source", default="yahoo-chart", help="Source label written to output JSON.")
+    parser = argparse.ArgumentParser(
+        description="Fetch and validate public daily closes for market.prices.json."
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG,
+        help="JSON object mapping every required ticker to its history start date.",
+    )
+    parser.add_argument("--output", type=Path, default=Path("market.prices.json"))
+    parser.add_argument("--end", default="today", help="YYYY-MM-DD end date, or 'today'.")
+    parser.add_argument("--source", default="yahoo-chart")
+    parser.add_argument("--retries", type=int, default=3)
     args = parser.parse_args()
 
-    input_path = Path(args.input)
-    output_path = Path(args.output)
-    start = resolve_date(args.start)
+    if args.retries < 1:
+        parser.error("--retries must be at least 1")
+
     end = resolve_date(args.end)
-    ranges, existing = ranges_from_existing(input_path)
+    ranges = load_ranges(args.config)
+    if any(parse_date(start) > parse_date(end) for start in ranges.values()):
+        parser.error("--end must not be earlier than a configured start date")
 
-    if args.tickers:
-        if not start or not end:
-            parser.error("--tickers requires --start and --end")
-        ranges = {ticker.strip().upper(): (start, end) for ticker in args.tickers.split(",") if ticker.strip()}
-    elif start or end:
-        # Move one edge of every existing range and keep the other, so refreshing
-        # to today does not disturb each ticker's own history start date.
-        ranges = {ticker: (start or old_start, end or old_end) for ticker, (old_start, old_end) in ranges.items()}
-
-    if not ranges:
-        raise SystemExit("No ticker/date ranges found. Provide --tickers, --start, and --end.")
-
-    output = {}
-    errors = {}
-    for ticker, (start, end) in sorted(ranges.items()):
+    prices = {}
+    failures = []
+    for ticker, start in ranges.items():
         try:
-            output[ticker] = fetch_yahoo_daily(ticker, start, end)
-            print(f"{ticker}: {len(output[ticker])} points ({output[ticker][0]['date']} to {output[ticker][-1]['date']})")
-        except (HTTPError, URLError, RuntimeError, ValueError) as exc:
-            errors[ticker] = str(exc)
-            fallback = (existing.get("prices") or {}).get(ticker)
-            if fallback:
-                output[ticker] = fallback
-                print(f"{ticker}: fallback {len(fallback)} points ({exc})", file=sys.stderr)
-            else:
-                print(f"{ticker}: failed ({exc})", file=sys.stderr)
+            prices[ticker] = fetch_with_retries(ticker, start, end, args.retries)
+            rows = prices[ticker]
+            first = rows[0]["date"] if rows else "none"
+            last = rows[-1]["date"] if rows else "none"
+            print(f"{ticker}: {len(rows)} points ({first} to {last})")
+        except RuntimeError as exc:
+            failures.append(str(exc))
+
+    if failures:
+        raise SystemExit("Market price update failed; output left unchanged:\n- " + "\n- ".join(failures))
+
+    as_of = validate_prices(ranges, prices, end)
+    existing = load_existing(args.output)
+    unchanged = (
+        existing.get("asOf") == as_of
+        and existing.get("source") == args.source
+        and existing.get("prices") == prices
+    )
+    generated_at = existing.get("generatedAt") if unchanged else None
+    if not isinstance(generated_at, str):
+        generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
     result = {
-        "asOf": max(row[-1]["date"] for row in output.values() if row),
+        "asOf": as_of,
         "source": args.source,
-        "generatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "prices": output,
+        "generatedAt": generated_at,
+        "prices": prices,
     }
-    if errors:
-        result["errors"] = errors
-
-    output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
-    print(f"wrote {output_path}")
+    write_json_atomically(args.output, result)
+    print(f"validated and wrote {args.output}")
 
 
 if __name__ == "__main__":

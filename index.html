@@ -3,31 +3,63 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
   <title>持仓与收益</title>
   <style>
     :root {
-      --bg: #f7f8f4;
+      --bg: #ffffff;
       --surface: #ffffff;
-      --surface-soft: #f0f4ed;
-      --surface-hover: #f6faf3;
-      --text: #101511;
+      --surface-soft: #f3f5f2;
+      --surface-hover: #f5f7f4;
+      --raised: #ffffff;
+      --text: #0b0f0c;
       --muted: #687066;
       --soft: #9aa29a;
-      --line: #e3e9df;
-      --line-strong: #ccd6c7;
+      --line: #e6e9e4;
+      --line-strong: #d3d8d0;
       --good: #00c805;
-      --good-dark: #008f2f;
+      --good-dark: #00802a;
       --danger: #ff5000;
-      --shadow: 0 18px 44px rgba(22, 36, 25, 0.08);
-      --card-radius: 8px;
+      --danger-text: #d23f00;
+      --pill-up: #00c805;
+      --pill-down: #ff5000;
+      --slice: #c5ccc3;
+      --slice-active: #0b0f0c;
+      --card-radius: 12px;
       --pill-radius: 999px;
       --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
-      color-scheme: light;
+      color-scheme: light dark;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #000000;
+        --surface: #000000;
+        --surface-soft: #151816;
+        --surface-hover: #0f1110;
+        --raised: #2a2e2b;
+        --text: #ffffff;
+        --muted: #9aa09b;
+        --soft: #6b716c;
+        --line: #1f2320;
+        --line-strong: #323733;
+        --good-dark: #00c805;
+        --danger-text: #ff5000;
+        --pill-up: #00802a;
+        --pill-down: #d23f00;
+        --slice: #3a3f3b;
+        --slice-active: #ffffff;
+      }
     }
 
     * {
       box-sizing: border-box;
       -webkit-tap-highlight-color: transparent;
+    }
+
+    [hidden] {
+      display: none !important;
     }
 
     html,
@@ -53,43 +85,27 @@
         "Microsoft YaHei",
         sans-serif;
       font-variant-numeric: tabular-nums;
-      text-rendering: geometricPrecision;
+      -webkit-font-smoothing: antialiased;
     }
 
     .shell {
-      width: min(1180px, calc(100% - 32px));
-      min-height: 100svh;
+      width: min(1180px, calc(100% - 48px));
       margin: 0 auto;
-      padding: max(18px, env(safe-area-inset-top)) 0 max(28px, env(safe-area-inset-bottom));
-      display: grid;
-      place-items: center;
-    }
-
-    .glass {
-      width: 100%;
-      min-height: min(900px, calc(100svh - 42px));
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      background: var(--surface);
-      box-shadow: var(--shadow);
-      overflow: hidden;
+      padding: max(24px, env(safe-area-inset-top)) 0 max(40px, env(safe-area-inset-bottom));
     }
 
     .lock {
-      min-height: min(900px, calc(100svh - 42px));
+      min-height: calc(100svh - 64px);
       display: grid;
       place-items: center;
-      padding: 28px;
-      background: linear-gradient(180deg, #ffffff, #f7faf4);
     }
 
     .lock-card {
-      width: min(460px, 100%);
+      width: min(420px, 100%);
       border: 1px solid var(--line);
-      border-radius: var(--card-radius);
+      border-radius: 16px;
       padding: 32px;
       background: var(--surface);
-      box-shadow: var(--shadow);
     }
 
     h1,
@@ -99,14 +115,14 @@
     }
 
     h1 {
-      font-size: 2.4rem;
-      line-height: 1.08;
+      font-size: 2rem;
+      line-height: 1.1;
       font-weight: 780;
       letter-spacing: 0;
     }
 
     .input-row {
-      margin-top: 26px;
+      margin-top: 24px;
       display: flex;
       gap: 10px;
     }
@@ -121,15 +137,15 @@
       padding: 0 16px;
       color: var(--text);
       background: var(--surface-soft);
+      font: inherit;
       font-size: 16px;
       font-weight: 520;
-      transition: border-color 180ms var(--ease), background 180ms var(--ease), box-shadow 180ms var(--ease);
+      transition: border-color 160ms var(--ease), background 160ms var(--ease);
     }
 
     input:focus {
       border-color: var(--good);
-      background: #fff;
-      box-shadow: 0 0 0 4px rgba(0, 200, 5, 0.12);
+      background: var(--surface);
     }
 
     input::placeholder {
@@ -137,119 +153,171 @@
     }
 
     button {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 48px;
+      margin: 0;
+      padding: 0;
       border: 0;
-      border-radius: var(--pill-radius);
-      padding: 0 18px;
-      color: #062208;
-      background: var(--good);
-      font-size: 15px;
-      font-weight: 760;
+      color: inherit;
+      background: none;
+      font: inherit;
       letter-spacing: 0;
       cursor: pointer;
-      white-space: nowrap;
-      transition: transform 160ms var(--ease), background 160ms var(--ease), box-shadow 160ms var(--ease), opacity 160ms var(--ease);
-    }
-
-    button:hover {
-      background: #00b905;
-      box-shadow: 0 10px 24px rgba(0, 200, 5, 0.22);
-      transform: translateY(-1px);
-    }
-
-    button:active {
-      transform: translateY(0) scale(0.985);
-    }
-
-    button.secondary {
-      color: var(--text);
-      border: 1px solid var(--line);
-      background: var(--surface-soft);
-      box-shadow: none;
-    }
-
-    button.secondary:hover {
-      border-color: var(--line-strong);
-      background: #eaf1e6;
-      box-shadow: none;
     }
 
     button:disabled {
       opacity: 0.58;
       cursor: not-allowed;
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--text);
+      outline-offset: 2px;
+    }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 48px;
+      padding: 0 22px;
+      border-radius: var(--pill-radius);
+      color: #062208;
+      background: var(--good);
+      font-size: 15px;
+      font-weight: 760;
+      white-space: nowrap;
+      transition: background 160ms var(--ease), transform 160ms var(--ease);
+    }
+
+    .btn-primary:hover {
+      background: #00b505;
+    }
+
+    .btn-primary:active {
+      transform: scale(0.98);
+    }
+
+    .btn-primary:disabled {
       transform: none;
     }
 
     .error {
       min-height: 24px;
       margin-top: 14px;
-      color: var(--danger);
+      color: var(--danger-text);
       font-size: 14px;
       line-height: 1.55;
     }
 
     .dashboard {
       display: none;
-      padding: 30px;
-      background: var(--surface);
+    }
+
+    .dashboard .hero,
+    .dashboard .panel {
+      transition: opacity 160ms var(--ease), transform 220ms var(--ease);
+    }
+
+    .dashboard.is-refreshing .hero,
+    .dashboard.is-refreshing .panel.panel-ready {
+      opacity: 0.5;
     }
 
     .topbar {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
-      gap: 18px;
+      gap: 16px;
       align-items: start;
-      margin-bottom: 20px;
+      margin-bottom: 24px;
     }
 
-    .title-block {
+    .hero {
       min-width: 0;
     }
 
-    .eyebrow {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      min-height: 28px;
-      padding: 6px 10px;
-      border-radius: var(--pill-radius);
-      color: var(--good-dark);
-      background: rgba(0, 200, 5, 0.1);
-      font-size: 12px;
-      font-weight: 720;
-      letter-spacing: 0;
+    .hero-label {
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 650;
     }
 
-    .dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 999px;
-      background: var(--good);
-    }
-
-    .title-block h2 {
-      margin-top: 10px;
-      font-size: 2.65rem;
-      line-height: 1.05;
+    .hero-value {
+      margin-top: 6px;
+      font-size: clamp(3rem, 5.2vw, 3.6rem);
+      line-height: 1.04;
       font-weight: 760;
       letter-spacing: 0;
+      font-variant-numeric: normal;
+      overflow-wrap: anywhere;
+    }
+
+    .hero-delta {
+      display: flex;
+      flex-wrap: wrap;
+      column-gap: 6px;
+      margin-top: 8px;
+      color: var(--good-dark);
+      font-size: 1.125rem;
+      font-weight: 740;
+      font-variant-numeric: normal;
+    }
+
+    .hero-delta.negative {
+      color: var(--danger-text);
+    }
+
+    .hero-delta-label {
+      color: var(--muted);
+      font-weight: 600;
+      white-space: nowrap;
     }
 
     .meta {
-      margin-top: 8px;
+      margin-top: 6px;
       color: var(--muted);
-      font-size: 14px;
+      font-size: 13px;
       line-height: 1.5;
     }
 
     .actions {
       display: flex;
-      gap: 10px;
+      gap: 8px;
       align-items: center;
-      padding-top: 2px;
+    }
+
+    .icon-btn {
+      display: inline-grid;
+      place-items: center;
+      width: 40px;
+      height: 40px;
+      border: 1px solid var(--line);
+      border-radius: var(--pill-radius);
+      color: var(--text);
+      transition: background 160ms var(--ease), border-color 160ms var(--ease);
+    }
+
+    .icon-btn:hover {
+      border-color: var(--line-strong);
+      background: var(--surface-soft);
+    }
+
+    .icon-btn svg {
+      width: 18px;
+      height: 18px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .icon-btn.busy svg {
+      animation: spin 900ms linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
     }
 
     .tabs {
@@ -257,14 +325,13 @@
       top: max(10px, env(safe-area-inset-top));
       z-index: 5;
       display: inline-grid;
-      grid-template-columns: repeat(3, minmax(92px, 1fr));
+      grid-template-columns: repeat(3, minmax(88px, 1fr));
       gap: 4px;
-      min-height: 48px;
+      min-height: 44px;
       padding: 4px;
       border-radius: var(--pill-radius);
-      border: 1px solid var(--line);
       background: var(--surface-soft);
-      margin-bottom: 18px;
+      margin-bottom: 28px;
       isolation: isolate;
     }
 
@@ -276,8 +343,8 @@
       left: 4px;
       width: calc((100% - 16px) / 3);
       border-radius: var(--pill-radius);
-      background: var(--surface);
-      box-shadow: 0 4px 14px rgba(22, 36, 25, 0.1);
+      background: var(--raised);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
       transform: translateX(0);
       transition: transform 260ms var(--ease);
       pointer-events: none;
@@ -293,26 +360,18 @@
     }
 
     .tab {
-      min-height: 38px;
-      color: var(--muted);
-      border: 0;
-      border-radius: var(--pill-radius);
+      min-height: 36px;
       padding: 0 18px;
-      background: transparent;
-      box-shadow: none;
+      border-radius: var(--pill-radius);
+      color: var(--muted);
+      font-size: 15px;
       font-weight: 740;
-      transition: color 180ms var(--ease), transform 180ms var(--ease);
+      transition: color 160ms var(--ease);
       position: relative;
       z-index: 1;
     }
 
-    .tab:hover {
-      transform: none;
-      box-shadow: none;
-      color: var(--text);
-      background: transparent;
-    }
-
+    .tab:hover,
     .tab.active {
       color: var(--text);
     }
@@ -321,7 +380,6 @@
       display: none;
       opacity: 0;
       transform: translateY(8px);
-      transition: opacity 220ms var(--ease), transform 220ms var(--ease);
     }
 
     .panel.active {
@@ -337,113 +395,93 @@
     .performance-grid {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(340px, 0.86fr);
-      gap: 18px;
-      align-items: stretch;
+      gap: 40px;
+      align-items: start;
     }
 
     .trading-grid {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(300px, 0.48fr);
-      gap: 18px;
+      gap: 40px;
       align-items: start;
       min-width: 0;
     }
 
-    .metric-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px;
-      margin-bottom: 18px;
-    }
-
     .chart-card,
     .list-card,
-    .metric-card,
     .perf-card,
     .trade-side-card,
-    .ranking-card,
-    .summary-item {
-      border: 1px solid var(--line);
-      border-radius: var(--card-radius);
-      background: var(--surface);
+    .ranking-card {
       min-width: 0;
     }
 
     .chart-card {
-      min-height: 610px;
       display: grid;
-      grid-template-rows: 1fr auto;
-      padding: 20px;
+      gap: 20px;
     }
 
     .chart-wrap {
-      min-height: 470px;
       width: 100%;
       min-width: 0;
       display: grid;
       place-items: center;
     }
 
-    .trade-chart-card {
-      min-height: 640px;
-      grid-template-rows: auto 1fr auto;
-    }
-
-    .trade-chart-wrap {
-      min-height: 520px;
-      place-items: stretch;
-      overflow: hidden;
-    }
-
     svg {
-      width: min(100%, 500px);
-      max-width: 100%;
-      height: auto;
       display: block;
+    }
+
+    #holdingsChart {
+      width: min(100%, 440px);
+      height: auto;
       overflow: visible;
     }
 
-    svg.trade-chart {
-      width: 100%;
-      min-width: 0;
-      max-width: none;
-      align-self: auto;
-      overflow: hidden;
-    }
-
-    .slice-group {
+    .donut-slice {
+      fill: var(--slice);
+      stroke: var(--surface);
+      stroke-width: 2;
+      stroke-linejoin: round;
       cursor: pointer;
       transform-origin: 180px 180px;
-      transition: transform 240ms var(--ease), opacity 180ms var(--ease), filter 180ms var(--ease);
+      transition: fill 180ms var(--ease), transform 220ms var(--ease);
     }
 
-    .slice-group:hover,
-    .slice-group.active {
-      transform: scale(1.014);
-      filter: drop-shadow(0 8px 14px rgba(21, 34, 22, 0.12)) saturate(1.08);
-      opacity: 1;
+    .donut-slice.active {
+      fill: var(--slice-active);
+      transform: scale(1.02);
     }
 
-    .slice-group.dim {
-      opacity: 0.68;
+    .donut-slice:focus-visible {
+      outline: none;
+      stroke: var(--good);
+      stroke-width: 3;
     }
 
-    .center-copy {
-      transform-box: fill-box;
-      transform-origin: center;
-      transition: opacity 140ms var(--ease), transform 180ms var(--ease);
+    .center-title {
+      fill: var(--text);
+      font-size: 24px;
+      font-weight: 800;
     }
 
-    svg.center-changing .center-copy {
-      opacity: 0;
-      transform: translateY(4px);
+    .center-sub {
+      fill: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .center-value {
+      fill: var(--text);
+      font-size: 26px;
+      font-weight: 800;
     }
 
     .summary-strip {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
-      margin-top: 10px;
+      gap: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
     }
 
     .summary-strip.holdings-summary {
@@ -452,8 +490,6 @@
 
     .summary-item {
       min-width: 0;
-      padding: 14px;
-      background: var(--surface-soft);
     }
 
     .metric-label,
@@ -465,31 +501,25 @@
     }
 
     .summary-value {
-      margin-top: 7px;
-      font-size: 1.05rem;
+      margin-top: 6px;
+      font-size: 1.1rem;
       font-weight: 760;
       letter-spacing: 0;
       line-height: 1.2;
+      font-variant-numeric: normal;
       overflow-wrap: anywhere;
-    }
-
-    .list-card,
-    .perf-card,
-    .trade-side-card,
-    .ranking-card {
-      padding: 16px;
     }
 
     .list-head {
       display: flex;
       align-items: baseline;
       justify-content: space-between;
-      padding: 2px 2px 14px;
+      padding: 0 0 12px;
       gap: 14px;
     }
 
     .list-head strong {
-      font-size: 1.12rem;
+      font-size: 1.05rem;
       font-weight: 760;
       letter-spacing: 0;
     }
@@ -502,83 +532,60 @@
     }
 
     .holding-list,
-    .perf-list {
+    .perf-list,
+    .trade-list {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 2px;
     }
 
     .holding,
     .perf-row,
-    .rank-row {
+    .trade-row {
       position: relative;
-      overflow: hidden;
-      border: 1px solid transparent;
-      border-radius: var(--card-radius);
-      background: var(--surface);
+      border-radius: 10px;
       cursor: pointer;
-      transition: transform 180ms var(--ease), border-color 180ms var(--ease), background 180ms var(--ease), box-shadow 180ms var(--ease);
+      transition: background 160ms var(--ease);
     }
 
     .holding::before,
-    .perf-row::before {
+    .perf-row::before,
+    .trade-row::before {
       content: "";
       position: absolute;
-      top: 10px;
-      bottom: 10px;
+      top: 12px;
+      bottom: 12px;
       left: 0;
       width: 3px;
       border-radius: 0 999px 999px 0;
-      background: var(--accent, var(--good));
+      background: var(--text);
       opacity: 0;
       transform: scaleY(0.4);
-      transform-origin: center;
-      transition: opacity 180ms var(--ease), transform 220ms var(--ease);
-    }
-
-    .holding > *,
-    .perf-row > * {
-      position: relative;
-    }
-
-    .holding {
-      display: grid;
-      grid-template-columns: auto minmax(0, 1fr) auto;
-      gap: 12px;
-      align-items: center;
-      padding: 12px;
+      transition: opacity 160ms var(--ease), transform 220ms var(--ease);
     }
 
     .holding:hover,
     .holding.active,
-    .perf-row.active,
     .perf-row:hover,
-    .rank-row:hover {
-      transform: translateY(-1px);
-      border-color: var(--line);
+    .perf-row.active,
+    .trade-row:hover,
+    .trade-row.active {
       background: var(--surface-hover);
-      box-shadow: 0 8px 20px rgba(22, 36, 25, 0.06);
     }
 
-    .holding.active,
-    .perf-row.active {
-      border-color: rgba(0, 200, 5, 0.2);
-      background: linear-gradient(90deg, var(--accent-soft, rgba(0, 200, 5, 0.08)), #ffffff 44%);
-    }
-
-    .holding:hover::before,
     .holding.active::before,
-    .perf-row:hover::before,
-    .perf-row.active::before {
+    .perf-row.active::before,
+    .trade-row.active::before {
       opacity: 1;
       transform: scaleY(1);
     }
 
-    .swatch {
-      width: 8px;
-      height: 34px;
-      border-radius: var(--pill-radius);
-      box-shadow: inset 0 0 0 1px rgba(16, 21, 17, 0.1);
+    .holding {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 14px;
     }
 
     .holding-main,
@@ -606,8 +613,9 @@
 
     .kind {
       color: var(--muted);
-      font-size: 12px;
-      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 650;
+      padding: 2px 7px;
       border-radius: var(--pill-radius);
       background: var(--surface-soft);
       white-space: nowrap;
@@ -639,30 +647,129 @@
       font-size: 12px;
     }
 
-    .metric-card {
-      min-height: 126px;
-      padding: 18px;
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 24px;
+      margin-bottom: 32px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--line);
     }
 
-    .metric-card.primary {
-      background: #eefbea;
-      border-color: rgba(0, 200, 5, 0.22);
+    .metric-card {
+      min-width: 0;
     }
 
     .metric-value {
-      margin-top: 12px;
+      margin-top: 8px;
       font-size: 1.9rem;
-      font-weight: 780;
+      font-weight: 760;
       letter-spacing: 0;
       line-height: 1.08;
+      font-variant-numeric: normal;
       overflow-wrap: anywhere;
     }
 
     .metric-sub {
-      margin-top: 10px;
+      margin-top: 8px;
       color: var(--muted);
       font-size: 12px;
       line-height: 1.42;
+    }
+
+    .gain {
+      color: var(--good-dark);
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .gain.negative {
+      color: var(--danger-text);
+    }
+
+    .readout-label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .readout-value {
+      margin-top: 4px;
+      font-size: 2.25rem;
+      line-height: 1.08;
+      font-weight: 760;
+      letter-spacing: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .readout-value.gain {
+      font-weight: 760;
+    }
+
+    .readout-sub {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 10px;
+      min-height: 20px;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .gain-bar {
+      display: flex;
+      gap: 2px;
+      min-height: 32px;
+    }
+
+    .gain-bar.empty::before {
+      content: "暂无收益构成";
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .gain-seg {
+      position: relative;
+      flex: 1 1 0;
+      min-width: 3px;
+      height: 32px;
+    }
+
+    .gain-seg::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 8px;
+      height: 16px;
+      background: var(--slice);
+      transition: background 160ms var(--ease);
+    }
+
+    .gain-seg:first-child::before {
+      border-radius: 4px 0 0 4px;
+    }
+
+    .gain-seg:last-child::before {
+      border-radius: 0 4px 4px 0;
+    }
+
+    .gain-seg:only-child::before {
+      border-radius: 4px;
+    }
+
+    .gain-seg.active::before {
+      background: var(--good);
+    }
+
+    .gain-seg.negative.active::before {
+      background: var(--danger);
+    }
+
+    .gain-seg:focus-visible {
+      outline-offset: 0;
+      border-radius: 4px;
     }
 
     .perf-row {
@@ -682,16 +789,6 @@
       min-width: 0;
     }
 
-    .gain {
-      color: var(--good-dark);
-      font-weight: 780;
-      letter-spacing: 0;
-    }
-
-    .gain.negative {
-      color: var(--danger);
-    }
-
     .perf-row-bottom {
       margin-top: 8px;
       color: var(--muted);
@@ -700,7 +797,7 @@
     }
 
     .bar-track {
-      height: 8px;
+      height: 6px;
       border-radius: var(--pill-radius);
       margin-top: 12px;
       background: var(--surface-soft);
@@ -710,64 +807,261 @@
     .bar-fill {
       height: 100%;
       border-radius: var(--pill-radius);
-      background: var(--accent, var(--good));
+      background: var(--good);
       min-width: 4px;
-      transition: width 260ms var(--ease), background 180ms var(--ease);
     }
 
     .bar-fill.negative {
       background: var(--danger);
     }
 
-    .ticker-selector,
-    .trade-list {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
+    .ranking-card {
+      margin-top: 40px;
     }
 
-    .ticker-selector {
-      margin-bottom: 16px;
+    .rank-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      column-gap: 40px;
     }
 
-    .ticker-chip,
-    .trade-row {
-      position: relative;
-      overflow: hidden;
-      border: 1px solid transparent;
-      border-radius: var(--card-radius);
-      background: var(--surface);
-      cursor: pointer;
-      padding: 12px;
-      transition: transform 180ms var(--ease), border-color 180ms var(--ease), background 180ms var(--ease), box-shadow 180ms var(--ease);
-    }
-
-    .ticker-chip::before,
-    .trade-row::before {
-      content: "";
-      position: absolute;
-      top: 10px;
-      bottom: 10px;
-      left: 0;
-      width: 3px;
-      border-radius: 0 999px 999px 0;
-      background: var(--accent, var(--good));
-      opacity: 0;
-      transform: scaleY(0.4);
-      transform-origin: center;
-      transition: opacity 180ms var(--ease), transform 220ms var(--ease);
-    }
-
-    .ticker-chip > *,
-    .trade-row > * {
-      position: relative;
-    }
-
-    .ticker-chip {
+    .rank-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .rank-sub {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 240px;
+    }
+
+    .rank-gain {
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .ticker-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 28px;
+    }
+
+    .ticker-pill {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: baseline;
+      gap: 8px;
+      min-height: 36px;
+      padding: 8px 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--pill-radius);
+      color: var(--text);
+      transition: background 160ms var(--ease), border-color 160ms var(--ease), color 160ms var(--ease);
+    }
+
+    .ticker-pill:hover {
+      border-color: var(--line-strong);
+      background: var(--surface-soft);
+    }
+
+    .ticker-pill .ticker {
+      font-size: 14px;
+    }
+
+    .ticker-pill-return {
+      color: var(--good-dark);
+      font-size: 12px;
+      font-weight: 720;
+      white-space: nowrap;
+    }
+
+    .ticker-pill-return.negative {
+      color: var(--danger-text);
+    }
+
+    .ticker-pill.active {
+      border-color: var(--text);
+      background: var(--text);
+      color: var(--surface);
+    }
+
+    .ticker-pill.active .ticker-pill-return {
+      color: var(--pill-up);
+    }
+
+    .ticker-pill.active .ticker-pill-return.negative {
+      color: var(--pill-down);
+    }
+
+    .trade-chart-card {
+      gap: 16px;
+    }
+
+    .trade-head {
+      min-width: 0;
+    }
+
+    .trade-title {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 4px 10px;
+    }
+
+    .trade-title strong {
+      font-size: 1.05rem;
+      font-weight: 760;
+    }
+
+    .trade-title span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .readout-delta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 8px;
+      margin-top: 6px;
+      color: var(--good-dark);
+      font-size: 14px;
+      font-weight: 740;
+    }
+
+    .readout-delta.negative {
+      color: var(--danger-text);
+    }
+
+    .readout-date {
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .trade-chart-wrap {
+      position: relative;
+      height: clamp(280px, 40vh, 400px);
+    }
+
+    svg.trade-chart {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      cursor: crosshair;
+      touch-action: pan-y;
+      border-radius: 8px;
+      --trend: var(--good);
+    }
+
+    svg.trade-chart.is-down {
+      --trend: var(--danger);
+    }
+
+    .price-path {
+      fill: none;
+      stroke: var(--trend);
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .price-area {
+      fill: var(--trend);
+      opacity: 0.1;
+    }
+
+    .baseline-line {
+      stroke: var(--line-strong);
+      stroke-width: 1;
+    }
+
+    .axis-label {
+      fill: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .scrub-line {
+      stroke: var(--muted);
+      stroke-width: 1;
+      pointer-events: none;
+    }
+
+    .scrub-dot {
+      fill: var(--trend);
+      stroke: var(--surface);
+      stroke-width: 2;
+      pointer-events: none;
+    }
+
+    .trade-marker {
+      cursor: pointer;
+      transition: opacity 160ms var(--ease);
+    }
+
+    .trade-marker:focus {
+      outline: none;
+    }
+
+    .trade-marker.dim {
+      opacity: 0.4;
+    }
+
+    .marker-hit {
+      fill: transparent;
+    }
+
+    .marker-dot {
+      transform-box: fill-box;
+      transform-origin: center;
+      transition: transform 160ms var(--ease);
+    }
+
+    .trade-marker.active .marker-dot {
+      transform: scale(1.2);
+    }
+
+    .marker-circle {
+      fill: var(--good);
+      stroke: var(--surface);
+      stroke-width: 2;
+    }
+
+    .trade-marker.sell .marker-circle {
+      fill: var(--danger);
+    }
+
+    .trade-marker:focus-visible .marker-circle {
+      stroke: var(--text);
+    }
+
+    .marker-label {
+      fill: #0b0f0c;
+      font-size: 10px;
+      font-weight: 800;
+      pointer-events: none;
+    }
+
+    .chart-callout {
+      fill: var(--text);
+    }
+
+    .chart-callout-text {
+      fill: var(--surface);
+      font-size: 12px;
+      font-weight: 700;
+      pointer-events: none;
     }
 
     .trade-row {
@@ -777,39 +1071,13 @@
       align-items: center;
       flex: 0 0 auto;
       min-height: 64px;
-      width: 100%;
+      padding: 12px 14px;
     }
 
-    .ticker-chip:hover,
-    .ticker-chip.active,
-    .trade-row:hover,
-    .trade-row.active {
-      transform: translateY(-1px);
-      border-color: var(--line);
-      background: var(--surface-hover);
-      box-shadow: 0 8px 20px rgba(22, 36, 25, 0.06);
-    }
-
-    .ticker-chip.active,
-    .trade-row.active {
-      border-color: rgba(0, 200, 5, 0.2);
-      background: linear-gradient(90deg, var(--accent-soft, rgba(0, 200, 5, 0.08)), #ffffff 44%);
-    }
-
-    .ticker-chip:hover::before,
-    .ticker-chip.active::before,
-    .trade-row:hover::before,
-    .trade-row.active::before {
-      opacity: 1;
-      transform: scaleY(1);
-    }
-
-    .ticker-chip-main,
     .trade-main {
       min-width: 0;
     }
 
-    .ticker-chip-sub,
     .trade-meta,
     .trade-detail-text {
       margin-top: 4px;
@@ -818,40 +1086,22 @@
       line-height: 1.42;
     }
 
-    .ticker-chip-sub {
-      white-space: normal;
-      overflow: visible;
-      text-overflow: clip;
-      overflow-wrap: anywhere;
-    }
-
-    .ticker-chip-return {
-      color: var(--good-dark);
-      font-size: 13px;
-      font-weight: 760;
-      white-space: nowrap;
-    }
-
-    .ticker-chip-return.negative {
-      color: var(--danger);
-    }
-
     .trade-side {
       display: inline-flex;
       align-items: center;
       justify-content: center;
       min-width: 42px;
-      height: 26px;
+      height: 24px;
       border-radius: var(--pill-radius);
       font-size: 12px;
       font-weight: 760;
-      color: #062208;
-      background: rgba(0, 200, 5, 0.16);
+      color: var(--good-dark);
+      background: rgba(0, 200, 5, 0.12);
     }
 
     .trade-side.sell {
-      color: #4d1700;
-      background: rgba(255, 80, 0, 0.14);
+      color: var(--danger-text);
+      background: rgba(255, 80, 0, 0.12);
     }
 
     .trade-price {
@@ -863,62 +1113,8 @@
     .trade-detail {
       margin-top: 16px;
       padding: 14px;
-      border: 1px solid var(--line);
       border-radius: var(--card-radius);
       background: var(--surface-soft);
-    }
-
-    @media (min-width: 1081px) {
-      .trade-chart-card {
-        position: sticky;
-        top: 18px;
-        align-self: start;
-      }
-
-      .trade-chart-wrap {
-        min-height: clamp(430px, calc(100vh - 280px), 520px);
-      }
-
-      .trade-side-card {
-        display: flex;
-        flex-direction: column;
-        max-height: min(920px, calc(100vh - 84px));
-        min-height: 0;
-        overflow: hidden;
-      }
-
-      .trade-side-card .list-head,
-      .ticker-selector,
-      .trade-detail {
-        flex: 0 0 auto;
-      }
-
-      .ticker-selector {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        max-height: clamp(220px, 34vh, 360px);
-        overflow-y: auto;
-        overscroll-behavior: contain;
-        padding-right: 4px;
-        margin-right: -4px;
-      }
-
-      .ticker-chip {
-        align-items: flex-start;
-        min-width: 0;
-      }
-
-      .trade-list {
-        flex: 1 1 auto;
-        min-height: clamp(180px, 24vh, 260px);
-        min-width: 0;
-        overflow-x: hidden;
-        overflow-y: auto;
-        overscroll-behavior: contain;
-        padding-right: 4px;
-        margin-right: -4px;
-        scrollbar-gutter: stable;
-      }
     }
 
     .trade-detail-head {
@@ -939,119 +1135,46 @@
     }
 
     .trade-detail-side.sell {
-      color: var(--danger);
-    }
-
-    .price-path {
-      fill: none;
-      stroke: var(--good);
-      stroke-width: 4;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-    }
-
-    .price-area {
-      fill: rgba(0, 200, 5, 0.08);
-    }
-
-    .axis-line,
-    .grid-line {
-      stroke: var(--line);
-      stroke-width: 1;
-    }
-
-    .axis-label {
-      fill: var(--muted);
-      font-size: 12px;
-      font-weight: 620;
-    }
-
-    .trade-marker {
-      cursor: pointer;
-      transition: opacity 160ms var(--ease), filter 160ms var(--ease);
-    }
-
-    .marker-dot {
-      transform-box: fill-box;
-      transform-origin: center;
-      transition: transform 180ms var(--ease);
-    }
-
-    .trade-marker:hover .marker-dot,
-    .trade-marker.active .marker-dot {
-      transform: scale(1.14);
-    }
-
-    .trade-marker:hover,
-    .trade-marker.active {
-      filter: drop-shadow(0 8px 14px rgba(22, 36, 25, 0.16));
-    }
-
-    .trade-marker.dim {
-      opacity: 0.45;
-    }
-
-    .marker-label {
-      fill: #fff;
-      font-size: 11px;
-      font-weight: 860;
-      pointer-events: none;
-    }
-
-    .chart-callout {
-      fill: #101511;
-    }
-
-    .chart-callout-text {
-      fill: #fff;
-      font-size: 12px;
-      font-weight: 720;
-      pointer-events: none;
+      color: var(--danger-text);
     }
 
     .empty-note {
       padding: 18px;
       color: var(--muted);
-      border: 1px solid var(--line);
       border-radius: var(--card-radius);
       background: var(--surface-soft);
       font-size: 13px;
       line-height: 1.5;
     }
 
-    .ranking-card {
-      margin-top: 18px;
-    }
+    @media (min-width: 1081px) {
+      .trade-chart-card {
+        position: sticky;
+        top: 70px;
+        align-self: start;
+      }
 
-    .rank-list {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
-    }
+      .trade-side-card {
+        display: flex;
+        flex-direction: column;
+        max-height: calc(100vh - 96px);
+        min-height: 0;
+      }
 
-    .rank-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 12px;
-      cursor: default;
-      background: var(--surface-soft);
-    }
+      .trade-side-card .list-head,
+      .trade-detail {
+        flex: 0 0 auto;
+      }
 
-    .rank-sub {
-      margin-top: 4px;
-      color: var(--muted);
-      font-size: 12px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      max-width: 220px;
-    }
-
-    .rank-gain {
-      text-align: right;
-      white-space: nowrap;
+      .trade-list {
+        flex: 1 1 auto;
+        min-height: 180px;
+        min-width: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+      }
     }
 
     .toast {
@@ -1060,11 +1183,12 @@
       bottom: max(18px, env(safe-area-inset-bottom));
       transform: translateX(-50%);
       max-width: calc(100% - 28px);
-      padding: 12px 14px;
+      padding: 12px 16px;
       border-radius: var(--pill-radius);
-      background: #101511;
-      color: #fff;
+      background: var(--text);
+      color: var(--surface);
       font-size: 14px;
+      font-weight: 600;
       opacity: 0;
       pointer-events: none;
       transition: opacity 180ms var(--ease), transform 180ms var(--ease);
@@ -1081,191 +1205,90 @@
       .performance-grid,
       .trading-grid {
         grid-template-columns: 1fr;
-      }
-
-      .metric-grid {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 32px;
       }
     }
 
     @media (max-width: 760px) {
       .shell {
-        width: min(100%, 680px);
-        padding: 10px;
-        align-items: start;
-      }
-
-      .glass {
-        min-height: calc(100svh - 20px);
-        border-radius: 14px;
-      }
-
-      .dashboard {
-        padding: 16px;
-      }
-
-      .topbar {
-        grid-template-columns: 1fr;
-      }
-
-      .actions {
         width: 100%;
-      }
-
-      .actions button {
-        flex: 1;
-      }
-
-      .metric-grid,
-      .summary-strip {
-        grid-template-columns: 1fr;
-      }
-
-      .title-block h2 {
-        font-size: 2.2rem;
-      }
-
-      .metric-value {
-        font-size: 1.7rem;
-      }
-
-      .tabs {
-        width: 100%;
-      }
-
-      .chart-card {
-        min-height: auto;
-        padding: 14px;
-      }
-
-      .chart-wrap {
-        min-height: 380px;
-      }
-
-      .trade-chart-card {
-        min-height: auto;
-        overflow: hidden;
-      }
-
-      .trade-chart-wrap {
-        width: 100%;
-        min-height: 0;
-        height: clamp(190px, 52vw, 300px);
-        overflow: hidden;
-        place-items: stretch;
-      }
-
-      svg {
-        width: min(100%, 410px);
-      }
-
-      svg.trade-chart {
-        width: 100%;
-        height: 100%;
-        max-width: 100%;
-        overflow: hidden;
-      }
-
-      .rank-list {
-        grid-template-columns: 1fr;
-      }
-
-      .ticker-selector {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(min(100%, 168px), 1fr));
-        gap: 8px;
-        margin-bottom: 16px;
-        overflow: visible;
-        padding: 0;
-      }
-
-      .ticker-chip {
-        align-items: flex-start;
-        flex: none;
-        min-width: 0;
-      }
-
-      .ticker-chip-sub {
-        white-space: normal;
-        overflow: visible;
-        text-overflow: clip;
-        overflow-wrap: anywhere;
-        line-height: 1.35;
+        padding: max(16px, env(safe-area-inset-top)) 16px max(28px, env(safe-area-inset-bottom));
       }
 
       .lock {
-        min-height: calc(100svh - 20px);
-        padding: 18px;
+        min-height: calc(100svh - 44px);
       }
 
       .lock-card {
         padding: 24px;
       }
 
-      h1 {
-        font-size: 2.15rem;
-      }
-
       .input-row {
         flex-direction: column;
+      }
+
+      .topbar {
+        margin-bottom: 20px;
+      }
+
+      .hero-value {
+        font-size: 3rem;
+      }
+
+      .hero-delta {
+        font-size: 1rem;
+      }
+
+      .tabs {
+        width: 100%;
+        margin-bottom: 24px;
+      }
+
+      .metric-grid,
+      .rank-list {
+        grid-template-columns: 1fr;
+      }
+
+      .metric-grid {
+        gap: 18px;
+      }
+
+      .metric-value {
+        font-size: 1.7rem;
+      }
+
+      #holdingsChart {
+        width: min(100%, 340px);
+      }
+
+      .ticker-pills {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        margin: 0 -16px 24px;
+        padding: 0 16px 2px;
+        scroll-padding: 0 16px;
+        scroll-snap-type: x proximity;
+        scrollbar-width: none;
+      }
+
+      .ticker-pills::-webkit-scrollbar {
+        display: none;
+      }
+
+      .ticker-pill {
+        scroll-snap-align: start;
+      }
+
+      .trade-chart-wrap {
+        height: clamp(220px, 58vw, 300px);
+      }
+
+      .readout-value {
+        font-size: 2rem;
       }
     }
 
     @media (max-width: 430px) {
-      .shell {
-        width: 100%;
-        padding: 0;
-      }
-
-      .glass {
-        min-height: 100svh;
-        border-radius: 0;
-        border-left: 0;
-        border-right: 0;
-      }
-
-      .dashboard {
-        padding: max(12px, env(safe-area-inset-top)) 12px max(18px, env(safe-area-inset-bottom));
-      }
-
-      .title-block h2 {
-        font-size: 2rem;
-      }
-
-      .metric-card,
-      .summary-item,
-      .list-card,
-      .perf-card,
-      .trade-side-card,
-      .ranking-card {
-        padding: 14px;
-      }
-
-      .chart-wrap {
-        min-height: 320px;
-      }
-
-      svg {
-        width: min(100%, 330px);
-      }
-
-      svg.trade-chart {
-        width: 100%;
-      }
-
-      .holding {
-        grid-template-columns: auto minmax(0, 1fr);
-      }
-
-      .holding-side {
-        grid-column: 2;
-        text-align: left;
-        display: flex;
-        gap: 10px;
-        align-items: baseline;
-        min-width: 0;
-      }
-
       .perf-row-top,
       .perf-row-bottom {
         align-items: flex-start;
@@ -1280,14 +1303,6 @@
 
       .rank-gain {
         text-align: left;
-      }
-
-      .ticker-selector {
-        grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
-      }
-
-      .ticker-chip {
-        min-width: 0;
       }
 
       .trade-row {
@@ -1306,6 +1321,8 @@
       *::after {
         scroll-behavior: auto !important;
         transition-duration: 1ms !important;
+        animation-duration: 1ms !important;
+        animation-iteration-count: 1 !important;
       }
     }
   </style>
@@ -1318,36 +1335,43 @@
           <h1>请输入密码</h1>
           <div class="input-row">
             <input id="passwordInput" type="password" autocomplete="current-password" placeholder="请输入密码" />
-            <button id="unlockBtn">进入</button>
+            <button class="btn-primary" id="unlockBtn" type="button">进入</button>
           </div>
           <div id="lockError" class="error"></div>
         </div>
       </div>
 
       <div id="dashboard" class="dashboard">
-        <div class="topbar">
-          <div class="title-block">
-            <div class="eyebrow"><span class="dot"></span> 资产概览</div>
-            <h2>当前投资概览</h2>
+        <header class="topbar">
+          <div class="hero">
+            <div class="hero-label">当前展示资产</div>
+            <div id="heroValue" class="hero-value"></div>
+            <div id="heroDelta" class="hero-delta">
+              <span id="heroDeltaValue"></span><span class="hero-delta-label">累计收益</span>
+            </div>
             <div id="meta" class="meta"></div>
           </div>
           <div class="actions">
-            <button class="secondary" id="refreshBtn">刷新数据</button>
-            <button class="secondary" id="lockBtn">锁定</button>
+            <button class="icon-btn" id="refreshBtn" type="button" aria-label="刷新数据" title="刷新数据">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"></path><path d="M20 4v5h-5"></path></svg>
+            </button>
+            <button class="icon-btn" id="lockBtn" type="button" aria-label="锁定" title="锁定">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path></svg>
+            </button>
           </div>
-        </div>
+        </header>
 
         <div id="tabs" class="tabs" role="tablist" aria-label="Dashboard tabs" data-active="holdings">
-          <button class="tab active" id="holdingsTab" role="tab" aria-selected="true" aria-controls="holdingsPanel">持仓</button>
-          <button class="tab" id="performanceTab" role="tab" aria-selected="false" aria-controls="performancePanel">收益</button>
-          <button class="tab" id="tradingTab" role="tab" aria-selected="false" aria-controls="tradingPanel">交易</button>
+          <button class="tab active" id="holdingsTab" type="button" role="tab" aria-selected="true" aria-controls="holdingsPanel">持仓</button>
+          <button class="tab" id="performanceTab" type="button" role="tab" aria-selected="false" aria-controls="performancePanel">收益</button>
+          <button class="tab" id="tradingTab" type="button" role="tab" aria-selected="false" aria-controls="tradingPanel">交易</button>
         </div>
 
         <section id="holdingsPanel" class="panel active" role="tabpanel" aria-labelledby="holdingsTab">
           <div class="main-grid">
             <section class="chart-card">
               <div class="chart-wrap">
-                <svg id="holdingsChart" viewBox="0 0 360 360" role="img" aria-label="持仓饼图"></svg>
+                <svg id="holdingsChart" viewBox="0 0 360 360" role="img" aria-label="持仓分布"></svg>
               </div>
 
               <div class="summary-strip holdings-summary">
@@ -1365,7 +1389,7 @@
             <section class="list-card">
               <div class="list-head">
                 <strong>持仓明细</strong>
-                <span>点击切换高亮</span>
+                <span>悬停预览 · 点击固定</span>
               </div>
               <div id="holdingList" class="holding-list"></div>
             </section>
@@ -1374,7 +1398,7 @@
 
         <section id="performancePanel" class="panel" role="tabpanel" aria-labelledby="performanceTab">
           <div class="metric-grid">
-            <div class="metric-card primary">
+            <div class="metric-card">
               <div class="metric-label">累计收益</div>
               <div id="totalGain" class="metric-value"></div>
               <div id="totalGainSub" class="metric-sub"></div>
@@ -1392,10 +1416,20 @@
           </div>
 
           <div class="performance-grid">
-            <section class="chart-card">
-              <div class="chart-wrap">
-                <svg id="gainChart" viewBox="0 0 360 360" role="img" aria-label="收益来源饼图"></svg>
+            <section class="chart-card gain-card">
+              <div class="list-head">
+                <strong>收益构成</strong>
+                <span>按金额绝对值</span>
               </div>
+              <div class="gain-readout">
+                <div id="gainChartTitle" class="readout-label"></div>
+                <div id="gainChartValue" class="readout-value gain"></div>
+                <div class="readout-sub">
+                  <span id="gainChartPct"></span>
+                  <span id="gainChartShare"></span>
+                </div>
+              </div>
+              <div id="gainChart" class="gain-bar" role="group" aria-label="收益构成"></div>
               <div class="summary-strip">
                 <div class="summary-item">
                   <div class="summary-label">本金</div>
@@ -1415,7 +1449,7 @@
             <section class="perf-card">
               <div class="list-head">
                 <strong>收益明细</strong>
-                <span>点击切换图表中心</span>
+                <span>悬停预览 · 点击固定</span>
               </div>
               <div id="performanceList" class="perf-list"></div>
             </section>
@@ -1431,14 +1465,23 @@
         </section>
 
         <section id="tradingPanel" class="panel" role="tabpanel" aria-labelledby="tradingTab">
+          <div id="tickerSelector" class="ticker-pills" role="group" aria-label="股票选择"></div>
+
           <div class="trading-grid">
             <section class="chart-card trade-chart-card">
-              <div class="list-head">
-                <strong id="tradeChartTitle">交易轨迹</strong>
-                <span id="tradeChartRange"></span>
+              <div class="trade-head">
+                <div class="trade-title">
+                  <strong id="tradeChartTitle">交易轨迹</strong>
+                  <span id="tradeChartName"></span>
+                </div>
+                <div id="tradeReadoutPrice" class="readout-value"></div>
+                <div id="tradeReadoutDelta" class="readout-delta">
+                  <span id="tradeReadoutChange"></span><span id="tradeReadoutDate" class="readout-date"></span>
+                </div>
+                <div id="tradeChartRange" class="meta"></div>
               </div>
               <div class="chart-wrap trade-chart-wrap">
-                <svg id="tradeChart" class="trade-chart" viewBox="0 0 860 430" role="img" aria-label="交易价格曲线"></svg>
+                <svg id="tradeChart" class="trade-chart" role="img" tabindex="0" aria-label="交易价格曲线，可左右拖动或用方向键查看历史价格"></svg>
               </div>
               <div class="summary-strip">
                 <div class="summary-item">
@@ -1458,17 +1501,11 @@
 
             <section class="trade-side-card">
               <div class="list-head">
-                <strong>股票选择</strong>
-                <span>来自当前持仓</span>
-              </div>
-              <div id="tickerSelector" class="ticker-selector"></div>
-
-              <div class="list-head">
                 <strong>交易记录</strong>
-                <span>悬停联动标记</span>
+                <span>悬停预览 · 点击固定</span>
               </div>
               <div id="tradeList" class="trade-list"></div>
-              <div id="tradeDetail" class="trade-detail"></div>
+              <div id="tradeDetail" class="trade-detail" hidden></div>
             </section>
           </div>
         </section>
@@ -1476,7 +1513,7 @@
     </section>
   </main>
 
-  <div id="toast" class="toast"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script>
     const EMBEDDED_DATA = null;
@@ -1491,24 +1528,129 @@
       selectedTradingTicker: "",
       selectedTrade: -1,
       activeTab: "holdings",
-      colors: [
-        "#00c805",
-        "#00a76f",
-        "#2f80ed",
-        "#f2c94c",
-        "#ff5000",
-        "#6d5dfc",
-        "#00b8d9",
-        "#8dc63f",
-        "#f2994a",
-        "#242a24"
-      ]
+      dataVersion: 0
     };
+
+    // 鼠标悬停只做临时预览，离开后恢复；点击、触摸或键盘才会固定选中项。
+    const preview = { holding: null, performance: null, trade: null };
+    const previewTimers = {};
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
     const $ = (id) => document.getElementById(id);
 
     function setButtonLabel(id, text) {
       $(id).textContent = text;
+    }
+
+    function setText(id, text) {
+      const el = $(id);
+      if (el) el.textContent = text;
+    }
+
+    function finiteOrNull(value) {
+      if (value === null || value === undefined || value === "") return null;
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    // 数字从当前显示值滚动到目标值；打断时从中间值继续，减少动效时直接跳到终值。
+    function tweenText(el, to, format, duration = 360) {
+      if (!el) return;
+      window.cancelAnimationFrame(el._tweenFrame);
+      const from = Number.isFinite(el._tweenCurrent) ? el._tweenCurrent : to;
+      const finish = () => {
+        el._tweenCurrent = to;
+        el.textContent = format(to);
+      };
+      if (reducedMotion.matches || !Number.isFinite(to) || !Number.isFinite(from) || from === to) {
+        finish();
+        return;
+      }
+
+      const start = performance.now();
+      const step = (now) => {
+        const t = Math.min(1, (now - start) / duration);
+        if (t >= 1) {
+          finish();
+          return;
+        }
+        el._tweenCurrent = from + (to - from) * (1 - Math.pow(1 - t, 3));
+        el.textContent = format(el._tweenCurrent);
+        el._tweenFrame = window.requestAnimationFrame(step);
+      };
+      el._tweenFrame = window.requestAnimationFrame(step);
+    }
+
+    function setTextNow(el, value, format) {
+      if (!el) return;
+      window.cancelAnimationFrame(el._tweenFrame);
+      el._tweenCurrent = value;
+      el.textContent = format(value);
+    }
+
+    function shownHolding() {
+      return preview.holding ?? state.selectedHolding;
+    }
+
+    function shownPerformance() {
+      return preview.performance ?? state.selectedPerformance;
+    }
+
+    function shownTrade() {
+      return preview.trade ?? state.selectedTrade;
+    }
+
+    function refreshSelection(kind) {
+      if (kind === "holding") updateHoldingSelection();
+      else if (kind === "performance") updatePerformanceSelection();
+      else updateTradeSelection();
+    }
+
+    function setPreview(kind, index) {
+      window.clearTimeout(previewTimers[kind]);
+      if (preview[kind] === index) return;
+      preview[kind] = index;
+      refreshSelection(kind);
+    }
+
+    function endPreview(kind) {
+      window.clearTimeout(previewTimers[kind]);
+      // 稍作延迟：鼠标在相邻两项之间移动时不会先闪回已固定的选中项。
+      previewTimers[kind] = window.setTimeout(() => {
+        if (preview[kind] === null) return;
+        preview[kind] = null;
+        refreshSelection(kind);
+      }, 120);
+    }
+
+    function dropPreview(kind) {
+      window.clearTimeout(previewTimers[kind]);
+      preview[kind] = null;
+    }
+
+    function clearPreviews() {
+      Object.keys(preview).forEach(dropPreview);
+    }
+
+    function bindPreview(el, kind, index) {
+      el.addEventListener("pointerenter", (event) => {
+        if (event.pointerType === "mouse") setPreview(kind, index);
+      });
+      el.addEventListener("pointerleave", (event) => {
+        if (event.pointerType === "mouse") endPreview(kind);
+      });
+      el.addEventListener("focus", () => setPreview(kind, index));
+      el.addEventListener("blur", () => endPreview(kind));
+    }
+
+    function bindActivate(el, handler) {
+      el.addEventListener("click", handler);
+      el.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          handler();
+        }
+      });
     }
 
     const formatCurrency = (value) => {
@@ -1614,13 +1756,71 @@
           cache: "no-store"
         });
         if (!response.ok) return null;
-        return response.json();
+        return await response.json();
       } catch (err) {
         return null;
       }
     }
 
+    // 两个数据文件在页面打开时就开始下载：加密数据本身就是密文，行情是公开数据。
+    // 这样点击解锁后只剩密钥派生和一次渲染，不必再等网络。
+    let encryptedRequest = null;
+    let marketRequest = null;
+    let marketResult;
+
+    function requestEncrypted(fresh = false) {
+      if (!fresh && encryptedRequest) return encryptedRequest;
+      const request = fetchEncrypted();
+      encryptedRequest = request;
+      request.catch(() => {
+        if (encryptedRequest === request) encryptedRequest = null;
+      });
+      return request;
+    }
+
+    function requestMarketPrices(fresh = false) {
+      if (!fresh && marketRequest) return marketRequest;
+      const request = fetchPublicMarketPrices();
+      marketRequest = request;
+      marketResult = undefined;
+      request.then((data) => {
+        if (marketRequest === request) marketResult = data;
+      });
+      return request;
+    }
+
+    function prefetchData(fresh = false) {
+      requestMarketPrices(fresh);
+      if (!PREVIEW_MODE) requestEncrypted(fresh);
+    }
+
+    // 最多等待 ms 毫秒；超时返回 undefined，由调用方在数据到达后再补上。
+    function settleWithin(promise, ms) {
+      return new Promise((resolve) => {
+        const timer = window.setTimeout(() => resolve(undefined), ms);
+        promise.then(
+          (value) => {
+            window.clearTimeout(timer);
+            resolve(value);
+          },
+          () => {
+            window.clearTimeout(timer);
+            resolve(null);
+          }
+        );
+      });
+    }
+
+    async function unlockWith(password) {
+      const encrypted = await requestEncrypted();
+      const data = await decryptPayload(encrypted, password);
+      state.password = password;
+      const market = await settleWithin(requestMarketPrices(), 1200);
+      activateData(data, market);
+    }
+
     async function unlock() {
+      if ($("unlockBtn").disabled) return;
       const password = $("passwordInput").value.trim();
       const error = $("lockError");
       error.textContent = "";
@@ -1634,32 +1834,48 @@
       setButtonLabel("unlockBtn", "解密中");
 
       try {
-        const encrypted = await fetchEncrypted();
-        const data = await decryptPayload(encrypted, password);
-        state.password = password;
-        activateData(data);
+        await unlockWith(password);
         showToast("已解锁");
       } catch (err) {
         error.textContent = "密码错误，或数据文件不可用。";
       } finally {
         $("unlockBtn").disabled = false;
-        setButtonLabel("unlockBtn", "解锁");
+        setButtonLabel("unlockBtn", "进入");
       }
     }
 
-    function activateData(data) {
+    function activateData(data, market) {
       state.data = normalizeData(data);
+      state.dataVersion += 1;
       state.marketPrices = null;
       state.selectedHolding = 0;
       state.selectedPerformance = 0;
       state.selectedTradingTicker = state.data.trading[0]?.ticker || "";
       state.selectedTrade = -1;
       state.activeTab = "holdings";
+      clearPreviews();
+      applyMarketData(market);
 
       $("lock").style.display = "none";
       $("dashboard").style.display = "block";
       render();
-      hydratePublicMarketPrices();
+    }
+
+    // 行情通常在输入密码期间就已下载完成，直接在首次渲染前合并，避免交易图重绘两次。
+    // 如果还没返回（market 为 undefined），等它返回后只重绘交易页。
+    function applyMarketData(market) {
+      if (market !== undefined) {
+        if (market && applyPublicMarketPrices(market)) state.marketPrices = market;
+        return;
+      }
+
+      const version = state.dataVersion;
+      requestMarketPrices().then((late) => {
+        if (version !== state.dataVersion || !late || !state.data) return;
+        if (!applyPublicMarketPrices(late)) return;
+        state.marketPrices = late;
+        renderTrading();
+      });
     }
 
     function normalizeData(data) {
@@ -1924,31 +2140,33 @@
       return updated;
     }
 
-    async function hydratePublicMarketPrices() {
-      const marketData = await fetchPublicMarketPrices();
-      const updated = applyPublicMarketPrices(marketData);
-      if (!updated) return;
-      state.marketPrices = marketData;
-      renderTrading();
-      showToast(`已载入 ${updated} 个公开价格序列`);
+    function setRefreshBusy(busy) {
+      const button = $("refreshBtn");
+      button.disabled = busy;
+      button.classList.toggle("busy", busy);
+      button.setAttribute("aria-label", busy ? "刷新中" : "刷新数据");
+      $("dashboard").classList.toggle("is-refreshing", busy);
     }
 
     async function refreshData() {
       if (PREVIEW_MODE) {
-        activateData(EMBEDDED_DATA);
+        activateData(EMBEDDED_DATA, marketResult);
         showToast("预览数据已重新载入");
         return;
       }
 
       if (!state.password) return;
 
-      $("refreshBtn").disabled = true;
-      setButtonLabel("refreshBtn", "刷新中");
+      // 刷新期间保留当前画面、降低透明度，不闪白也不跳布局。
+      setRefreshBusy(true);
 
       try {
-        const encrypted = await fetchEncrypted();
+        const marketPromise = requestMarketPrices(true);
+        const encrypted = await requestEncrypted(true);
         const data = await decryptPayload(encrypted, state.password);
+        const market = await settleWithin(marketPromise, 1200);
         state.data = normalizeData(data);
+        state.dataVersion += 1;
         state.marketPrices = null;
         state.selectedHolding = Math.min(state.selectedHolding, state.data.holdings.length - 1);
         state.selectedPerformance = Math.min(state.selectedPerformance, state.data.performance.items.length - 1);
@@ -1956,14 +2174,14 @@
           ? state.selectedTradingTicker
           : state.data.trading[0]?.ticker || "";
         state.selectedTrade = -1;
+        clearPreviews();
+        applyMarketData(market);
         render();
-        hydratePublicMarketPrices();
         showToast("数据已刷新");
       } catch (err) {
         showToast("刷新失败，请确认密码或数据文件");
       } finally {
-        $("refreshBtn").disabled = false;
-        setButtonLabel("refreshBtn", "刷新数据");
+        setRefreshBusy(false);
       }
     }
 
@@ -1975,12 +2193,17 @@
 
       state.password = "";
       state.data = null;
+      state.dataVersion += 1;
       state.marketPrices = null;
       state.selectedHolding = 0;
+      tradeChartModel = null;
+      clearPreviews();
       $("passwordInput").value = "";
       $("dashboard").style.display = "none";
       $("lock").style.display = "grid";
       $("passwordInput").focus();
+      // 重新预取，下次解锁拿到的是最新文件。
+      prefetchData(true);
     }
 
     function polar(cx, cy, r, angleDeg) {
@@ -1992,6 +2215,20 @@
     }
 
     function donutPath(cx, cy, outerR, innerR, startAngle, endAngle) {
+      // 只有一个持仓时扇区是整圆，起止点重合会让 SVG 忽略圆弧；改画外圆加反向内圆。
+      if (endAngle - startAngle >= 359.999) {
+        return [
+          `M ${cx} ${cy - outerR}`,
+          `A ${outerR} ${outerR} 0 1 1 ${cx} ${cy + outerR}`,
+          `A ${outerR} ${outerR} 0 1 1 ${cx} ${cy - outerR}`,
+          "Z",
+          `M ${cx} ${cy - innerR}`,
+          `A ${innerR} ${innerR} 0 1 0 ${cx} ${cy + innerR}`,
+          `A ${innerR} ${innerR} 0 1 0 ${cx} ${cy - innerR}`,
+          "Z"
+        ].join(" ");
+      }
+
       const largeArc = endAngle - startAngle > 180 ? 1 : 0;
       const p1 = polar(cx, cy, outerR, startAngle);
       const p2 = polar(cx, cy, outerR, endAngle);
@@ -2049,29 +2286,10 @@
       return centerLabel(cleaned || ticker, 10);
     }
 
-    function hexToRgb(hex) {
-      const normalized = String(hex).replace("#", "");
-      if (normalized.length !== 6) return "0, 200, 5";
-      return [
-        parseInt(normalized.slice(0, 2), 16),
-        parseInt(normalized.slice(2, 4), 16),
-        parseInt(normalized.slice(4, 6), 16)
-      ].join(", ");
-    }
-
-    function renderDonut(svgId, items, valueGetter, selectedIndex, selectFn, centerRenderer) {
+    function renderDonut(svgId, items, valueGetter, selectedIndex, kind, selectFn, centerRenderer) {
       const svg = $(svgId);
       const total = items.reduce((sum, item) => sum + Math.max(0, Number(valueGetter(item))), 0);
       svg.innerHTML = "";
-
-      svg.appendChild(svgEl("circle", {
-        cx: "180",
-        cy: "180",
-        r: "152",
-        fill: "none",
-        stroke: "#edf2ea",
-        "stroke-width": "36"
-      }));
 
       let angle = 0;
       const slices = svgEl("g");
@@ -2079,30 +2297,14 @@
       items.forEach((item, index) => {
         const value = Math.max(0, Number(valueGetter(item)));
         const end = angle + (total ? value / total * 360 : 0);
-        const color = state.colors[index % state.colors.length];
         const path = svgEl("path", {
-          d: donutPath(180, 180, 154, 92, angle, end),
-          fill: color,
-          stroke: "#ffffff",
-          "stroke-width": "1.5",
-          "stroke-linejoin": "round",
-          class: [
-            "slice-group",
-            index === selectedIndex ? "active" : "",
-            index !== selectedIndex ? "dim" : ""
-          ].join(" ").trim(),
+          d: donutPath(180, 180, 158, 118, angle, end),
+          class: `donut-slice ${index === selectedIndex ? "active" : ""}`.trim(),
           tabindex: "0"
         });
         path.dataset.index = String(index);
-
-        path.addEventListener("mouseenter", () => selectFn(index));
-        path.addEventListener("click", () => selectFn(index));
-        path.addEventListener("keydown", (event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            selectFn(index);
-          }
-        });
+        bindPreview(path, kind, index);
+        bindActivate(path, () => selectFn(index));
 
         slices.appendChild(path);
         angle = end;
@@ -2110,50 +2312,16 @@
 
       svg.appendChild(slices);
 
-      svg.appendChild(svgEl("circle", {
-        cx: "180",
-        cy: "180",
-        r: "154",
-        fill: "none",
-        stroke: "#e3e9df",
-        "stroke-width": "1"
-      }));
-
-      svg.appendChild(svgEl("circle", {
-        cx: "180",
-        cy: "180",
-        r: "92",
-        fill: "none",
-        stroke: "#e3e9df",
-        "stroke-width": "1"
-      }));
-
-      const center = svgEl("g", {
-        "text-anchor": "middle",
-        "dominant-baseline": "middle"
-      });
-
-      center.appendChild(svgEl("circle", {
-        cx: "180",
-        cy: "180",
-        r: "68",
-        fill: "#ffffff",
-        stroke: "#e3e9df",
-        "stroke-width": "1"
-      }));
-
+      const center = svgEl("g", { "text-anchor": "middle" });
       centerRenderer(center);
       svg.appendChild(center);
     }
 
     function addSvgText(parent, text, attrs) {
-      const nextAttrs = {
-        ...attrs,
-        class: ["center-copy", attrs.class || ""].join(" ").trim()
-      };
-      const el = svgEl("text", nextAttrs);
+      const el = svgEl("text", attrs);
       el.textContent = text;
       parent.appendChild(el);
+      return el;
     }
 
     function setSvgText(id, text, attrs = {}) {
@@ -2163,31 +2331,12 @@
       Object.entries(attrs).forEach(([key, value]) => el.setAttribute(key, value));
     }
 
-    function animateCenter(svgId, updateFn) {
-      const svg = $(svgId);
-      if (!svg) {
-        updateFn();
-        return;
-      }
-
-      window.clearTimeout(animateCenter.timers[svgId]);
-      svg.classList.add("center-changing");
-      animateCenter.timers[svgId] = window.setTimeout(() => {
-        updateFn();
-        window.requestAnimationFrame(() => svg.classList.remove("center-changing"));
-      }, 90);
-    }
-
-    animateCenter.timers = {};
-
     function updateDonutSelection(svgId, selectedIndex) {
       const svg = $(svgId);
       if (!svg) return;
 
-      svg.querySelectorAll(".slice-group").forEach((slice) => {
-        const active = Number(slice.dataset.index) === selectedIndex;
-        slice.classList.toggle("active", active);
-        slice.classList.toggle("dim", !active);
+      svg.querySelectorAll(".donut-slice").forEach((slice) => {
+        slice.classList.toggle("active", Number(slice.dataset.index) === selectedIndex);
       });
     }
 
@@ -2202,142 +2351,96 @@
 
     function renderHoldingsChart() {
       const holdings = state.data.holdings;
-      const selected = holdings[state.selectedHolding];
+      const index = Math.min(shownHolding(), holdings.length - 1);
+      const selected = holdings[index];
 
+      // 强调式配色：选中项用墨色，其余统一灰色；涨跌色只留给盈亏。
       renderDonut(
         "holdingsChart",
         holdings,
         (item) => item.value,
-        state.selectedHolding,
+        index,
+        "holding",
         selectHolding,
         (center) => {
-          addSvgText(center, selected.ticker, {
-            id: "holdingsChartTitle",
-            x: "180",
-            y: "148",
-            fill: "#101511",
-            "font-size": "24",
-            "font-weight": "840",
-            "letter-spacing": "0"
-          });
-          addSvgText(center, holdingCenterLabel(selected), {
-            id: "holdingsChartSubtitle",
-            x: "180",
-            y: "172",
-            fill: "#687066",
-            "font-size": "11",
-            "font-weight": "500"
-          });
-          addSvgText(center, formatPct(selected.weight), {
-            id: "holdingsChartPct",
-            x: "180",
-            y: "202",
-            fill: "#00a53c",
-            "font-size": "23",
-            "font-weight": "840",
-            "letter-spacing": "0"
-          });
-          addSvgText(center, formatCurrency(selected.value), {
-            id: "holdingsChartValue",
-            x: "180",
-            y: "226",
-            fill: "#687066",
-            "font-size": "11",
-            "font-weight": "500"
-          });
+          if (!selected) return;
+          addSvgText(center, selected.ticker, { id: "holdingsChartTitle", x: "180", y: "148", class: "center-title" });
+          addSvgText(center, holdingCenterLabel(selected), { id: "holdingsChartSubtitle", x: "180", y: "170", class: "center-sub" });
+          addSvgText(center, formatPct(selected.weight), { id: "holdingsChartPct", x: "180", y: "206", class: "center-value" });
+          addSvgText(center, formatCurrency(selected.value), { id: "holdingsChartValue", x: "180", y: "226", class: "center-sub" });
         }
       );
     }
 
+    let gainChartTotal = 0;
+
+    // 收益构成用一条横向堆叠条：宽度按收益金额绝对值（与原饼图口径一致），选中段显示涨跌色。
     function renderGainChart() {
+      const bar = $("gainChart");
       const items = state.data.performance.items;
-      const selected = items[state.selectedPerformance];
+      gainChartTotal = items.reduce((sum, item) => sum + Math.abs(Number(item.gain) || 0), 0);
+      bar.innerHTML = "";
+      bar.classList.toggle("empty", !gainChartTotal);
 
-      renderDonut(
-        "gainChart",
-        items,
-        (item) => Math.abs(item.gain),
-        state.selectedPerformance,
-        selectPerformance,
-        (center) => {
-          addSvgText(center, performanceCenterLabel(selected), {
-            id: "gainChartTitle",
-            x: "180",
-            y: "150",
-            fill: "#101511",
-            "font-size": "14",
-            "font-weight": "760"
-          });
-          addSvgText(center, formatSignedCurrency(selected.gain), {
-            id: "gainChartValue",
-            x: "180",
-            y: "184",
-            fill: selected.gain >= 0 ? "#00a53c" : "#ff5000",
-            "font-size": "22",
-            "font-weight": "840",
-            "letter-spacing": "0"
-          });
-          addSvgText(center, formatPerformanceReturn(selected), {
-            id: "gainChartPct",
-            x: "180",
-            y: "215",
-            fill: "#687066",
-            "font-size": "13",
-            "font-weight": "600"
-          });
-        }
-      );
+      items.forEach((item, index) => {
+        const size = Math.abs(Number(item.gain) || 0);
+        if (!size) return;
+        const segment = document.createElement("button");
+        segment.type = "button";
+        segment.className = `gain-seg ${item.gain < 0 ? "negative" : ""}`.trim();
+        segment.dataset.index = String(index);
+        segment.style.flexGrow = String(size / gainChartTotal);
+        segment.setAttribute("aria-label", `${item.label || ""} ${formatSignedCurrency(item.gain)}`);
+        bindPreview(segment, "performance", index);
+        segment.addEventListener("click", () => selectPerformance(index));
+        bar.appendChild(segment);
+      });
     }
 
-    function updateHoldingSelection(animate = true) {
-      const selected = state.data.holdings[state.selectedHolding];
-      updateDonutSelection("holdingsChart", state.selectedHolding, animate);
-      updateRowSelection("holdingList", ".holding", state.selectedHolding);
+    function updateHoldingSelection() {
+      const holdings = state.data.holdings;
+      const index = Math.min(shownHolding(), holdings.length - 1);
+      const selected = holdings[index];
+      if (!selected) return;
 
-      const updateCenter = () => {
-        setSvgText("holdingsChartTitle", selected.ticker);
-        setSvgText("holdingsChartSubtitle", holdingCenterLabel(selected));
-        setSvgText("holdingsChartPct", formatPct(selected.weight));
-        setSvgText("holdingsChartValue", formatCurrency(selected.value));
-      };
-
-      if (animate) {
-        animateCenter("holdingsChart", updateCenter);
-      } else {
-        updateCenter();
-      }
+      updateDonutSelection("holdingsChart", index);
+      updateRowSelection("holdingList", ".holding", index);
+      setSvgText("holdingsChartTitle", selected.ticker);
+      setSvgText("holdingsChartSubtitle", holdingCenterLabel(selected));
+      tweenText($("holdingsChartPct"), selected.weight, formatPct);
+      tweenText($("holdingsChartValue"), Number(selected.value), formatCurrency);
     }
 
-    function updatePerformanceSelection(animate = true) {
-      const selected = state.data.performance.items[state.selectedPerformance];
-      updateDonutSelection("gainChart", state.selectedPerformance, animate);
-      updateRowSelection("performanceList", ".perf-row", state.selectedPerformance);
+    function updatePerformanceSelection() {
+      const items = state.data.performance.items;
+      const index = Math.min(shownPerformance(), items.length - 1);
+      const selected = items[index];
+      if (!selected) return;
 
-      const updateCenter = () => {
-        setSvgText("gainChartTitle", performanceCenterLabel(selected));
-        setSvgText("gainChartValue", formatSignedCurrency(selected.gain), {
-          fill: selected.gain >= 0 ? "#00a53c" : "#ff5000"
-        });
-        setSvgText("gainChartPct", formatPerformanceReturn(selected));
-      };
+      $("gainChart").querySelectorAll(".gain-seg").forEach((segment) => {
+        segment.classList.toggle("active", Number(segment.dataset.index) === index);
+      });
+      updateRowSelection("performanceList", ".perf-row", index);
 
-      if (animate) {
-        animateCenter("gainChart", updateCenter);
-      } else {
-        updateCenter();
-      }
+      setText("gainChartTitle", performanceCenterLabel(selected));
+      const value = $("gainChartValue");
+      value.classList.toggle("negative", selected.gain < 0);
+      tweenText(value, selected.gain, formatSignedCurrency);
+      setText("gainChartPct", formatPerformanceReturn(selected));
+      const share = gainChartTotal ? Math.abs(Number(selected.gain) || 0) / gainChartTotal * 100 : 0;
+      setText("gainChartShare", share ? `占比 ${share.toFixed(1)}%` : "");
     }
 
     function selectHolding(index) {
-      if (state.selectedHolding === index) return;
+      dropPreview("holding");
       state.selectedHolding = index;
-      updateHoldingSelection(true);
+      updateHoldingSelection();
     }
 
     function selectPerformance(index) {
-      if (state.selectedPerformance === index) return;
+      dropPreview("performance");
       state.selectedPerformance = index;
-      updatePerformanceSelection(true);
+      updatePerformanceSelection();
     }
 
     function formatPerformanceReturn(item) {
@@ -2364,17 +2467,15 @@
 
     function renderHoldingList() {
       const list = $("holdingList");
+      const shown = shownHolding();
       list.innerHTML = "";
 
       state.data.holdings.forEach((item, index) => {
-        const accent = state.colors[index % state.colors.length];
         const row = document.createElement("div");
-        row.className = `holding ${index === state.selectedHolding ? "active" : ""}`;
+        row.className = `holding ${index === shown ? "active" : ""}`.trim();
         row.dataset.index = String(index);
-        row.style.setProperty("--accent", accent);
-        row.style.setProperty("--accent-soft", `rgba(${hexToRgb(accent)}, 0.09)`);
+        row.tabIndex = 0;
         row.innerHTML = `
-          <div class="swatch" style="background:${accent}"></div>
           <div class="holding-main">
             <div class="ticker-line">
               <span class="ticker">${escapeHtml(item.ticker)}</span>
@@ -2388,8 +2489,8 @@
           </div>
         `;
 
-        row.addEventListener("mouseenter", () => selectHolding(index));
-        row.addEventListener("click", () => selectHolding(index));
+        bindPreview(row, "holding", index);
+        bindActivate(row, () => selectHolding(index));
 
         list.appendChild(row);
       });
@@ -2398,15 +2499,14 @@
     function renderPerformanceList() {
       const list = $("performanceList");
       const items = state.data.performance.items;
+      const shown = shownPerformance();
       list.innerHTML = "";
 
       items.forEach((item, index) => {
-        const accent = state.colors[index % state.colors.length];
         const row = document.createElement("div");
-        row.className = `perf-row ${index === state.selectedPerformance ? "active" : ""}`;
+        row.className = `perf-row ${index === shown ? "active" : ""}`.trim();
         row.dataset.index = String(index);
-        row.style.setProperty("--accent", accent);
-        row.style.setProperty("--accent-soft", `rgba(${hexToRgb(accent)}, 0.09)`);
+        row.tabIndex = 0;
         const gainShare = item.currentValue ? Math.abs(item.gain) / Math.abs(item.currentValue) * 100 : 0;
         const pct = item.gain === 0 ? 0 : Math.max(4, Math.min(100, gainShare));
         row.innerHTML = `
@@ -2418,11 +2518,11 @@
             <span>${item.sharedPrincipal ? "共享本金" : "本金"} ${formatCurrency(item.principal)}</span>
             <span>${formatPerformanceCurrent(item)}</span>
           </div>
-          <div class="bar-track"><div class="bar-fill ${item.gain < 0 ? "negative" : ""}" style="width:${pct}%; --accent:${accent}"></div></div>
+          <div class="bar-track"><div class="bar-fill ${item.gain < 0 ? "negative" : ""}" style="width:${pct}%"></div></div>
         `;
 
-        row.addEventListener("mouseenter", () => selectPerformance(index));
-        row.addEventListener("click", () => selectPerformance(index));
+        bindPreview(row, "performance", index);
+        bindActivate(row, () => selectPerformance(index));
 
         list.appendChild(row);
       });
@@ -2490,26 +2590,27 @@
 
     function renderTickerSelector() {
       const selector = $("tickerSelector");
+      const scrollLeft = selector.scrollLeft;
       selector.innerHTML = "";
 
-      state.data.trading.forEach((item, index) => {
-        const accent = state.colors[index % state.colors.length];
-        const chip = document.createElement("div");
-        chip.className = `ticker-chip ${item.ticker === state.selectedTradingTicker ? "active" : ""}`;
-        chip.dataset.ticker = item.ticker;
-        chip.style.setProperty("--accent", accent);
-        chip.style.setProperty("--accent-soft", `rgba(${hexToRgb(accent)}, 0.09)`);
-        chip.innerHTML = `
-          <div class="ticker-chip-main">
-            <div class="ticker">${escapeHtml(item.ticker)}</div>
-            <div class="ticker-chip-sub">${escapeHtml(item.nameZh || "")} · ${item.orders.length} 笔交易</div>
-          </div>
-          <div class="ticker-chip-return ${item.returnPct < 0 ? "negative" : ""}">${formatSignedPct(item.returnPct)}</div>
+      state.data.trading.forEach((item) => {
+        const active = item.ticker === state.selectedTradingTicker;
+        const pill = document.createElement("button");
+        pill.type = "button";
+        pill.className = `ticker-pill ${active ? "active" : ""}`.trim();
+        pill.dataset.ticker = item.ticker;
+        pill.title = `${item.nameZh || item.ticker} · ${item.orders.length} 笔交易`;
+        pill.setAttribute("aria-pressed", active ? "true" : "false");
+        pill.innerHTML = `
+          <span class="ticker">${escapeHtml(item.ticker)}</span>
+          <span class="ticker-pill-return ${item.returnPct < 0 ? "negative" : ""}">${formatSignedPct(item.returnPct)}</span>
         `;
 
-        chip.addEventListener("click", () => selectTradingTicker(item.ticker));
-        selector.appendChild(chip);
+        pill.addEventListener("click", () => selectTradingTicker(item.ticker));
+        selector.appendChild(pill);
       });
+
+      selector.scrollLeft = scrollLeft;
     }
 
     function renderTradeList() {
@@ -2517,15 +2618,14 @@
       const item = currentTradingItem();
       list.innerHTML = "";
       if (!item) return;
+      const shown = shownTrade();
 
       item.orders.forEach((order, index) => {
         const isSell = order.side === "sell";
-        const accent = isSell ? "#ff5000" : "#00c805";
         const row = document.createElement("div");
-        row.className = `trade-row ${index === state.selectedTrade ? "active" : ""}`;
+        row.className = `trade-row ${index === shown ? "active" : ""}`.trim();
         row.dataset.index = String(index);
-        row.style.setProperty("--accent", accent);
-        row.style.setProperty("--accent-soft", `rgba(${hexToRgb(accent)}, 0.09)`);
+        row.tabIndex = 0;
         row.innerHTML = `
           <div class="trade-main">
             <span class="trade-side ${isSell ? "sell" : ""}">${isSell ? "卖出" : "买入"}</span>
@@ -2534,21 +2634,32 @@
           <div class="trade-price">${formatCurrencyFull(order.price)}</div>
         `;
 
-        row.addEventListener("mouseenter", () => selectTrade(index));
-        row.addEventListener("click", () => selectTrade(index));
+        bindPreview(row, "trade", index);
+        bindActivate(row, () => selectTrade(index));
         list.appendChild(row);
       });
     }
+
+    // 交易图按容器实际像素尺寸绘制（1 个 viewBox 单位 = 1px），手机上的文字不会被等比缩小。
+    let tradeChartModel = null;
+    let tradeChartSize = "";
 
     function renderTradeChart() {
       const item = currentTradingItem();
       const svg = $("tradeChart");
       svg.innerHTML = "";
+      tradeChartModel = null;
       if (!item) return;
 
-      const width = 860;
-      const height = 430;
-      const padding = { left: 62, right: 24, top: 34, bottom: 52 };
+      const wrap = svg.parentElement;
+      const measured = wrap.clientWidth > 0 && wrap.clientHeight > 0;
+      const width = measured ? Math.round(wrap.clientWidth) : 860;
+      const height = measured ? Math.round(wrap.clientHeight) : 430;
+      tradeChartSize = measured ? `${width}x${height}` : "";
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      svg.classList.toggle("is-down", item.returnPct < 0);
+
+      const padding = { left: 14, right: 14, top: 20, bottom: 32 };
       const chartLeft = padding.left;
       const chartRight = width - padding.right;
       const chartTop = padding.top;
@@ -2569,7 +2680,7 @@
       const yMin = minClose - pricePad;
       const yMax = maxClose + pricePad;
       // 若交易记录把时间轴撑到价格序列之外，两端留出标记半径的空间，避免边缘标记被裁掉。
-      const markerRoom = 20;
+      const markerRoom = 16;
       const rangeLeft = chartLeft + (span.min < priceStart ? markerRoom : 0);
       const rangeRight = chartRight - (span.max > priceEnd ? markerRoom : 0);
       const x = scaleLinear(span.min, span.max, rangeLeft, rangeRight);
@@ -2582,79 +2693,68 @@
       const line = points.map((point, index) => `${index ? "L" : "M"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
       const area = `${line} L ${points[points.length - 1].x.toFixed(2)} ${chartBottom} L ${points[0].x.toFixed(2)} ${chartBottom} Z`;
 
-      const grid = svgEl("g");
-      for (let i = 0; i <= 4; i++) {
-        const pct = i / 4;
-        const gy = chartTop + (chartBottom - chartTop) * pct;
-        const value = yMax - (yMax - yMin) * pct;
-        grid.appendChild(svgEl("line", {
-          x1: String(chartLeft),
-          x2: String(chartRight),
-          y1: gy.toFixed(2),
-          y2: gy.toFixed(2),
-          class: "grid-line"
-        }));
-        const label = svgEl("text", {
-          x: "12",
-          y: (gy + 4).toFixed(2),
-          class: "axis-label"
-        });
-        label.textContent = formatCurrency(value);
-        grid.appendChild(label);
-      }
+      // 起点价参考线：曲线在它上方即区间上涨。
+      const baseY = points[0].y.toFixed(2);
+      svg.appendChild(svgEl("line", {
+        x1: String(chartLeft),
+        x2: String(chartRight),
+        y1: baseY,
+        y2: baseY,
+        class: "baseline-line"
+      }));
 
       const xTicks = [span.min, span.min + (span.max - span.min) / 2, span.max];
       xTicks.forEach((time, index) => {
         const label = svgEl("text", {
           x: x(time).toFixed(2),
-          y: String(height - 16),
+          y: String(height - 10),
           "text-anchor": index === 0 ? "start" : index === 2 ? "end" : "middle",
           class: "axis-label"
         });
         label.textContent = formatChartTime(time);
-        grid.appendChild(label);
+        svg.appendChild(label);
       });
-
-      grid.appendChild(svgEl("line", {
-        x1: String(chartLeft),
-        x2: String(chartRight),
-        y1: String(chartBottom),
-        y2: String(chartBottom),
-        class: "axis-line"
-      }));
-      svg.appendChild(grid);
 
       svg.appendChild(svgEl("path", { d: area, class: "price-area" }));
       svg.appendChild(svgEl("path", { d: line, class: "price-path" }));
 
+      const scrub = svgEl("g", { display: "none" });
+      const scrubLine = svgEl("line", {
+        x1: "0",
+        x2: "0",
+        y1: String(chartTop),
+        y2: String(chartBottom),
+        class: "scrub-line"
+      });
+      const scrubDot = svgEl("circle", { cx: "0", cy: "0", r: "5", class: "scrub-dot" });
+      scrub.append(scrubLine, scrubDot);
+      svg.appendChild(scrub);
+
       const markerLayer = svgEl("g");
-      const hasTradeSelection = state.selectedTrade >= 0 && state.selectedTrade < item.orders.length;
+      const shown = shownTrade();
+      const hasTradeSelection = shown >= 0 && shown < item.orders.length;
       item.orders.forEach((order, index) => {
         const markerX = x(order.time);
         const markerY = y(tradeMarkerClose(item.prices, order));
         const isSell = order.side === "sell";
-        const active = index === state.selectedTrade;
+        const active = index === shown;
         const marker = svgEl("g", {
-          class: `trade-marker ${active ? "active" : hasTradeSelection ? "dim" : ""}`,
+          class: `trade-marker ${isSell ? "sell" : "buy"} ${active ? "active" : hasTradeSelection ? "dim" : ""}`.trim(),
           transform: `translate(${markerX.toFixed(2)} ${markerY.toFixed(2)})`,
-          tabindex: "0"
+          tabindex: "0",
+          "aria-label": `${isSell ? "卖出" : "买入"} ${formatChartDate(order.date)} ${formatCurrencyFull(order.price)}`
         });
         marker.dataset.index = String(index);
         marker.dataset.x = markerX.toFixed(2);
         marker.dataset.y = markerY.toFixed(2);
 
+        // 透明命中区 24px，比可见标记大，方便点中。
+        marker.appendChild(svgEl("circle", { cx: "0", cy: "0", r: "12", class: "marker-hit" }));
         const dot = svgEl("g", { class: "marker-dot" });
-        dot.appendChild(svgEl("circle", {
-          cx: "0",
-          cy: "0",
-          r: "13",
-          fill: isSell ? "#ff5000" : "#00c805",
-          stroke: "#ffffff",
-          "stroke-width": "3"
-        }));
+        dot.appendChild(svgEl("circle", { cx: "0", cy: "0", r: "9", class: "marker-circle" }));
         const label = svgEl("text", {
           x: "0",
-          y: "4",
+          y: "3.5",
           "text-anchor": "middle",
           class: "marker-label"
         });
@@ -2662,26 +2762,20 @@
         dot.appendChild(label);
         marker.appendChild(dot);
 
-        marker.addEventListener("mouseenter", () => selectTrade(index));
-        marker.addEventListener("click", () => selectTrade(index));
-        marker.addEventListener("keydown", (event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            selectTrade(index);
-          }
-        });
-
+        bindPreview(marker, "trade", index);
+        bindActivate(marker, () => selectTrade(index));
         markerLayer.appendChild(marker);
       });
       svg.appendChild(markerLayer);
 
       const callout = svgEl("g", { id: "tradeCallout", display: "none" });
       callout.appendChild(svgEl("rect", {
+        id: "tradeCalloutBox",
         x: "0",
         y: "0",
         width: "168",
         height: "50",
-        rx: "12",
+        rx: "10",
         class: "chart-callout"
       }));
       callout.appendChild(svgEl("text", {
@@ -2697,6 +2791,129 @@
         class: "chart-callout-text"
       }));
       svg.appendChild(callout);
+
+      tradeChartModel = { item, points, width, chartBottom, scrub, scrubLine, scrubDot, index: -1 };
+    }
+
+    // 标题处的价格读数：默认显示最新收盘价和区间涨跌，拖动曲线时显示对应日期的价格。
+    function setTradeReadout(item, point, animate = false) {
+      const prices = item.prices;
+      const first = prices[0];
+      const last = prices[prices.length - 1];
+      const shown = point || last;
+      const change = first.close ? (shown.close - first.close) / first.close * 100 : 0;
+      const price = $("tradeReadoutPrice");
+      if (animate) tweenText(price, shown.close, formatCurrencyFull);
+      else setTextNow(price, shown.close, formatCurrencyFull);
+      $("tradeReadoutDelta").classList.toggle("negative", change < 0);
+      setText("tradeReadoutChange", formatSignedPct(change));
+      setText("tradeReadoutDate", point ? formatChartDate(point.date) : `截至 ${formatChartDate(last.date)}`);
+    }
+
+    function nearestPointIndex(points, x) {
+      let lo = 0;
+      let hi = points.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (points[mid].x < x) lo = mid + 1;
+        else hi = mid;
+      }
+      if (lo > 0 && Math.abs(points[lo - 1].x - x) <= Math.abs(points[lo].x - x)) return lo - 1;
+      return lo;
+    }
+
+    function scrubTo(index) {
+      const model = tradeChartModel;
+      if (!model || !model.points.length) return;
+      const i = Math.max(0, Math.min(model.points.length - 1, index));
+      const point = model.points[i];
+      model.index = i;
+      model.scrub.removeAttribute("display");
+      model.scrubLine.setAttribute("x1", point.x.toFixed(2));
+      model.scrubLine.setAttribute("x2", point.x.toFixed(2));
+      model.scrubDot.setAttribute("cx", point.x.toFixed(2));
+      model.scrubDot.setAttribute("cy", point.y.toFixed(2));
+      setTradeReadout(model.item, point);
+    }
+
+    function endScrub() {
+      const model = tradeChartModel;
+      if (!model || model.index < 0) return;
+      model.index = -1;
+      model.scrub.setAttribute("display", "none");
+      setTradeReadout(model.item, null);
+    }
+
+    // 拖动查看只更新十字线和读数的几个属性，每帧最多一次，不重绘整张图。
+    function bindTradeChartScrub() {
+      const svg = $("tradeChart");
+      let frame = 0;
+      let pending = null;
+
+      const scrubAtPointer = (event) => {
+        if (!tradeChartModel) return;
+        pending = { x: event.clientX, y: event.clientY };
+        if (frame) return;
+        frame = window.requestAnimationFrame(() => {
+          frame = 0;
+          const matrix = svg.getScreenCTM();
+          if (!matrix || !pending || !tradeChartModel) return;
+          const point = new DOMPoint(pending.x, pending.y).matrixTransform(matrix.inverse());
+          scrubTo(nearestPointIndex(tradeChartModel.points, point.x));
+        });
+      };
+
+      const stop = () => {
+        pending = null;
+        if (frame) {
+          window.cancelAnimationFrame(frame);
+          frame = 0;
+        }
+        endScrub();
+      };
+
+      svg.addEventListener("pointermove", scrubAtPointer);
+      svg.addEventListener("pointerdown", scrubAtPointer);
+      svg.addEventListener("pointerleave", stop);
+      svg.addEventListener("pointercancel", stop);
+      svg.addEventListener("pointerup", (event) => {
+        if (event.pointerType !== "mouse") stop();
+      });
+      svg.addEventListener("keydown", (event) => {
+        if (event.target !== svg || !tradeChartModel) return;
+        const count = tradeChartModel.points.length;
+        const current = tradeChartModel.index < 0 ? count - 1 : tradeChartModel.index;
+        const step = event.shiftKey ? 10 : 1;
+        const moves = { ArrowLeft: current - step, ArrowRight: current + step, Home: 0, End: count - 1 };
+        if (Object.prototype.hasOwnProperty.call(moves, event.key)) {
+          event.preventDefault();
+          scrubTo(moves[event.key]);
+        } else if (event.key === "Escape") {
+          endScrub();
+        }
+      });
+      svg.addEventListener("blur", endScrub);
+    }
+
+    // 容器尺寸变化（窗口缩放、切到交易页）时按新尺寸重绘；尺寸未变则跳过。
+    function watchTradeChartSize() {
+      if (!("ResizeObserver" in window)) return;
+      const wrap = $("tradeChart").parentElement;
+      let frame = 0;
+      const observer = new ResizeObserver(() => {
+        window.cancelAnimationFrame(frame);
+        frame = window.requestAnimationFrame(() => {
+          if (!state.data?.trading?.length) return;
+          if (!wrap.clientWidth || !wrap.clientHeight) return;
+          const size = `${Math.round(wrap.clientWidth)}x${Math.round(wrap.clientHeight)}`;
+          if (size === tradeChartSize) return;
+          renderTradeChart();
+          updateTradeSelection();
+          const item = currentTradingItem();
+          if (item) setTradeReadout(item, null);
+        });
+      });
+      observer.observe(wrap);
     }
 
     function renderTradeSummary() {
@@ -2706,27 +2923,38 @@
       const buys = item.orders.filter((order) => order.side === "buy").length;
       const sells = item.orders.filter((order) => order.side === "sell").length;
 
-      $("tradeChartTitle").textContent = `${item.ticker} 交易轨迹`;
+      $("tradeChartTitle").textContent = item.ticker;
+      $("tradeChartName").textContent = [item.nameZh, `${item.orders.length} 笔交易`].filter(Boolean).join(" · ");
       $("tradeChartRange").textContent = `${formatChartTime(span.min)} - ${formatChartTime(span.max)} · ${priceSourceLabel(item.priceSource)}`;
       $("tradeReturn").textContent = formatSignedPct(item.returnPct);
       $("tradeReturn").className = `summary-value gain ${item.returnPct < 0 ? "negative" : ""}`;
       $("tradeBuyCount").textContent = `${buys} 次`;
       $("tradeSellCount").textContent = `${sells} 次`;
+      setTradeReadout(item, null, true);
     }
 
     function renderTradingEmpty() {
+      tradeChartModel = null;
+      window.cancelAnimationFrame($("tradeReadoutPrice")._tweenFrame);
       $("tradeChartTitle").textContent = "交易轨迹";
+      $("tradeChartName").textContent = "";
       $("tradeChartRange").textContent = "";
+      $("tradeReadoutPrice").textContent = "";
+      $("tradeReadoutChange").textContent = "";
+      $("tradeReadoutDate").textContent = "";
       $("tradeChart").innerHTML = "";
       $("tradeReturn").textContent = "–";
+      $("tradeReturn").className = "summary-value";
       $("tradeBuyCount").textContent = "–";
       $("tradeSellCount").textContent = "–";
       $("tickerSelector").innerHTML = '<div class="empty-note">当前数据中没有可生成交易预览的股票持仓。</div>';
       $("tradeList").innerHTML = "";
       $("tradeDetail").innerHTML = "";
+      $("tradeDetail").hidden = true;
     }
 
     function renderTrading() {
+      dropPreview("trade");
       if (!state.data.trading.length) {
         renderTradingEmpty();
         return;
@@ -2736,18 +2964,19 @@
       renderTickerSelector();
       renderTradeList();
       renderTradeChart();
-      updateTradeSelection(false);
+      updateTradeSelection();
     }
 
     function updateTradeSelection() {
       const item = currentTradingItem();
       if (!item) return;
-      const hasSelection = state.selectedTrade >= 0 && state.selectedTrade < item.orders.length;
+      const index = shownTrade();
+      const hasSelection = index >= 0 && index < item.orders.length;
       const detail = $("tradeDetail");
       const svg = $("tradeChart");
       const callout = $("tradeCallout");
 
-      updateRowSelection("tradeList", ".trade-row", hasSelection ? state.selectedTrade : -1);
+      updateRowSelection("tradeList", ".trade-row", hasSelection ? index : -1);
       if (!hasSelection) {
         detail.innerHTML = "";
         detail.hidden = true;
@@ -2758,7 +2987,7 @@
         return;
       }
 
-      const order = item.orders[state.selectedTrade];
+      const order = item.orders[index];
       const isSell = order.side === "sell";
       detail.hidden = false;
       detail.innerHTML = `
@@ -2770,34 +2999,51 @@
       `;
 
       svg.querySelectorAll(".trade-marker").forEach((marker) => {
-        const active = Number(marker.dataset.index) === state.selectedTrade;
+        const active = Number(marker.dataset.index) === index;
         marker.classList.toggle("active", active);
         marker.classList.toggle("dim", !active);
       });
 
-      const marker = svg.querySelector(`.trade-marker[data-index="${state.selectedTrade}"]`);
-      if (!marker || !callout) return;
+      const marker = svg.querySelector(`.trade-marker[data-index="${index}"]`);
+      if (!marker || !callout || !tradeChartModel) return;
 
-      const markerX = Number(marker.dataset.x);
-      const markerY = Number(marker.dataset.y);
-      const calloutX = Math.max(66, Math.min(668, markerX + 18));
-      const calloutY = Math.max(18, Math.min(330, markerY - 64));
-      callout.removeAttribute("display");
-      callout.setAttribute("transform", `translate(${calloutX.toFixed(2)} ${calloutY.toFixed(2)})`);
       setSvgText("tradeCalloutTitle", `${isSell ? "卖出" : "买入"} ${order.shares} 股`);
       setSvgText("tradeCalloutSub", `${formatChartDate(order.date)} · ${formatCurrencyFull(order.price)}`);
+      callout.removeAttribute("display");
+
+      // 气泡宽度按文字实际宽度计算；标记太靠右时翻到左侧，太靠上时放到下方。
+      const textWidth = Math.max(
+        $("tradeCalloutTitle").getComputedTextLength?.() || 0,
+        $("tradeCalloutSub").getComputedTextLength?.() || 0
+      );
+      const boxWidth = textWidth ? Math.max(120, Math.ceil(textWidth) + 24) : 168;
+      const boxHeight = 50;
+      $("tradeCalloutBox").setAttribute("width", String(boxWidth));
+
+      const { width, chartBottom } = tradeChartModel;
+      const markerX = Number(marker.dataset.x);
+      const markerY = Number(marker.dataset.y);
+      let calloutX = markerX + 16;
+      if (calloutX + boxWidth > width - 8) calloutX = markerX - 16 - boxWidth;
+      calloutX = Math.max(8, Math.min(width - boxWidth - 8, calloutX));
+      let calloutY = markerY - boxHeight - 14;
+      if (calloutY < 8) calloutY = markerY + 14;
+      calloutY = Math.min(calloutY, chartBottom - boxHeight);
+      callout.setAttribute("transform", `translate(${calloutX.toFixed(2)} ${calloutY.toFixed(2)})`);
     }
 
     function selectTradingTicker(ticker) {
       if (state.selectedTradingTicker === ticker) return;
       state.selectedTradingTicker = ticker;
       state.selectedTrade = -1;
+      dropPreview("trade");
       renderTrading();
     }
 
     function selectTrade(index) {
-      if (state.selectedTrade === index) return;
-      state.selectedTrade = index;
+      dropPreview("trade");
+      // 再次点击已固定的交易会取消固定。
+      state.selectedTrade = state.selectedTrade === index ? -1 : index;
       updateTradeSelection();
     }
 
@@ -2890,6 +3136,18 @@
       $("totalPrincipal").textContent = formatCurrency(perf.totalPrincipal);
       $("gainSourceCount").textContent = `${perf.items.length} 类`;
       $("perfDate").textContent = data.asOf || "latest";
+      renderHero(data, perf);
+    }
+
+    function renderHero(data, perf) {
+      const current = finiteOrNull(perf.totalCurrentValue) ?? data.equityValue;
+      $("heroValue").textContent = formatCurrency(current);
+      const gain = finiteOrNull(perf.totalGain);
+      const pct = finiteOrNull(perf.totalReturnPct);
+      const delta = $("heroDelta");
+      delta.hidden = gain === null;
+      delta.classList.toggle("negative", gain !== null && gain < 0);
+      setText("heroDeltaValue", gain === null ? "" : `${formatSignedCurrency(gain)}${pct === null ? "" : ` (${formatSignedPct(pct)})`}`);
     }
 
     function switchTab(tab) {
@@ -2960,9 +3218,13 @@
       if (event.key === "Enter") unlock();
     });
 
+    bindTradeChartScrub();
+    watchTradeChartSize();
+    prefetchData();
+
     window.addEventListener("load", () => {
       if (PREVIEW_MODE && EMBEDDED_DATA) {
-        activateData(EMBEDDED_DATA);
+        activateData(EMBEDDED_DATA, marketResult);
         showToast("预览模式");
       } else {
         $("passwordInput").focus();

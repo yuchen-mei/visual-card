@@ -26,6 +26,7 @@
       --pill-down: #ff5000;
       --slice: #c5ccc3;
       --slice-active: #0b0f0c;
+      --warning-text: #8a5a00;
       --card-radius: 12px;
       --pill-radius: 999px;
       --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -50,6 +51,7 @@
         --pill-down: #d23f00;
         --slice: #3a3f3b;
         --slice-active: #ffffff;
+        --warning-text: #f0b441;
       }
     }
 
@@ -677,6 +679,110 @@
       line-height: 1.42;
     }
 
+    .annual-card {
+      margin-bottom: 32px;
+      padding-bottom: 32px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .annual-years {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 24px;
+    }
+
+    .annual-year-label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .annual-year-value {
+      margin-top: 6px;
+      font-size: 2rem;
+      line-height: 1.08;
+      font-weight: 760;
+      font-variant-numeric: normal;
+    }
+
+    .annual-year-sub {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .annual-table-wrap {
+      margin-top: 24px;
+      overflow-x: auto;
+    }
+
+    .annual-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .annual-table th,
+    .annual-table td {
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .annual-table th + th,
+    .annual-table td + td {
+      padding-left: 16px;
+    }
+
+    .annual-table th:first-child,
+    .annual-table td:first-child {
+      text-align: left;
+    }
+
+    .annual-table th {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .annual-table td:first-child {
+      font-weight: 720;
+    }
+
+    .annual-table .annual-name {
+      margin-left: 6px;
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    .annual-table tfoot td {
+      border-bottom: 0;
+      font-weight: 760;
+    }
+
+    .annual-table td.gain {
+      font-weight: 650;
+    }
+
+    .annual-table .empty-cell {
+      color: var(--soft);
+    }
+
+    .annual-notes {
+      display: grid;
+      gap: 6px;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .annual-warning {
+      color: var(--warning-text);
+    }
+
     .gain {
       color: var(--good-dark);
       font-weight: 760;
@@ -1286,6 +1392,10 @@
       .readout-value {
         font-size: 2rem;
       }
+
+      .annual-table .annual-name {
+        display: none;
+      }
     }
 
     @media (max-width: 430px) {
@@ -1415,6 +1525,16 @@
             </div>
           </div>
 
+          <section id="annualSection" class="annual-card">
+            <div class="list-head">
+              <strong>年度收益</strong>
+              <span>按自然年 · 市值变化扣除净投入</span>
+            </div>
+            <div id="annualYears" class="annual-years"></div>
+            <div id="annualTable" class="annual-table-wrap"></div>
+            <div id="annualNotes" class="annual-notes"></div>
+          </section>
+
           <div class="performance-grid">
             <section class="chart-card gain-card">
               <div class="list-head">
@@ -1522,6 +1642,7 @@
     const state = {
       password: "",
       data: null,
+      raw: null,
       marketPrices: null,
       selectedHolding: 0,
       selectedPerformance: 0,
@@ -1845,6 +1966,7 @@
     }
 
     function activateData(data, market) {
+      state.raw = data;
       state.data = normalizeData(data);
       state.dataVersion += 1;
       state.marketPrices = null;
@@ -1875,6 +1997,7 @@
         if (!applyPublicMarketPrices(late)) return;
         state.marketPrices = late;
         renderTrading();
+        renderAnnualSummary();
       });
     }
 
@@ -2165,6 +2288,7 @@
         const encrypted = await requestEncrypted(true);
         const data = await decryptPayload(encrypted, state.password);
         const market = await settleWithin(marketPromise, 1200);
+        state.raw = data;
         state.data = normalizeData(data);
         state.dataVersion += 1;
         state.marketPrices = null;
@@ -2193,6 +2317,7 @@
 
       state.password = "";
       state.data = null;
+      state.raw = null;
       state.dataVersion += 1;
       state.marketPrices = null;
       state.selectedHolding = 0;
@@ -3073,6 +3198,294 @@
       return gain / costBasis * 100;
     }
 
+    // 年度收益（股票 / ETF）= 年末市值 − 年初市值 − 当年净投入（买入金额 − 卖出金额），
+    // 卖出实现的盈亏因此自动计入当年。市值 = 交易记录累计股数 × 当日收盘价。
+    // 收益率用 Modified Dietz：按资金在年内停留的时间加权，年中追加的资金不会稀释收益率。
+    // CD 利息和股息只在数据提供带日期的 income 记录时计入，不参与收益率计算。
+    const DAY_MS = 86400000;
+
+    function dayTime(date) {
+      if (!date) return null;
+      const time = new Date(`${date}T00:00:00`).getTime();
+      return Number.isFinite(time) ? time : null;
+    }
+
+    function closeOnOrBefore(rows, time) {
+      let lo = 0;
+      let hi = rows.length - 1;
+      let found = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (rows[mid].time <= time) {
+          found = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      return found >= 0 ? rows[found].close : null;
+    }
+
+    function sharesAt(orders, time) {
+      let shares = 0;
+      for (const order of orders) {
+        if (order.time > time) break;
+        shares += order.side === "sell" ? -order.shares : order.shares;
+      }
+      return Math.abs(shares) < 1e-9 ? 0 : shares;
+    }
+
+    // 估值价优先用当日或之前最近的收盘价；早于价格序列的持仓退回用最近一笔成交价。
+    function markPrice(rows, orders, time) {
+      const close = closeOnOrBefore(rows, time);
+      if (close !== null) return close;
+      let price = 0;
+      for (const order of orders) {
+        if (order.time > time) break;
+        if (order.price > 0) price = order.price;
+      }
+      return price;
+    }
+
+    const formatShares = (value) => new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(value);
+
+    // 只用数据里的真实交易记录和真实价格（公开行情优先，其次内置价格），不用预览生成的示例数据。
+    function annualPositions(raw) {
+      const trading = raw.trading && typeof raw.trading === "object" ? raw.trading : {};
+      return Object.entries(trading)
+        .map(([ticker, item]) => {
+          const orders = (Array.isArray(item?.orders) ? item.orders : [])
+            .map((order) => ({
+              time: dayTime(order.date),
+              side: order.side === "sell" ? "sell" : "buy",
+              shares: Number(order.shares),
+              price: Number(order.price)
+            }))
+            .filter((order) => order.time !== null && Number.isFinite(order.shares) && order.shares > 0)
+            .sort((a, b) => a.time - b.time);
+          const publicRows = state.marketPrices
+            ? normalizePublicPriceRows(priceRowsFromMarketData(state.marketPrices, ticker))
+            : [];
+          const rows = publicRows.length ? publicRows : normalizePublicPriceRows(item?.prices);
+          return { ticker, orders, rows, missingPrice: orders.some((order) => !(order.price > 0)) };
+        })
+        .filter((position) => position.orders.length);
+    }
+
+    // 用持仓市值反推股数，与交易记录累计的股数比对；对不上通常是漏记交易、拆股或股息再投资。
+    function annualChecks(raw, positions) {
+      const checks = [];
+      const asOfTime = dayTime(raw.asOf) ?? Infinity;
+      const holdings = state.data.holdings.filter(isTradableHolding);
+      const byTicker = new Map(positions.map((position) => [position.ticker, position]));
+
+      holdings.forEach((holding) => {
+        const position = byTicker.get(holding.ticker);
+        if (!position) {
+          checks.push({ ticker: holding.ticker, text: "缺少交易记录，未计入" });
+          return;
+        }
+        if (!position.rows.length) return;
+        const close = closeOnOrBefore(position.rows, asOfTime);
+        const value = Number(holding.value);
+        if (!(close > 0) || !(value > 0)) return;
+        const implied = value / close;
+        const recorded = sharesAt(position.orders, asOfTime);
+        if (Math.abs(recorded - implied) > Math.max(implied * 0.04, 0.01)) {
+          checks.push({
+            ticker: holding.ticker,
+            text: `交易记录合计 ${formatShares(recorded)} 股，按持仓市值推算约 ${formatShares(implied)} 股`
+          });
+        }
+      });
+
+      positions.forEach((position) => {
+        if (!position.rows.length) {
+          checks.push({ ticker: position.ticker, text: "缺少价格数据，未计入" });
+        }
+        if (!holdings.some((holding) => holding.ticker === position.ticker)) {
+          const remaining = sharesAt(position.orders, Infinity);
+          if (remaining > 1e-6) {
+            checks.push({ ticker: position.ticker, text: `交易记录显示仍持有 ${formatShares(remaining)} 股，但持仓里没有` });
+          }
+        }
+        if (position.missingPrice) {
+          checks.push({ ticker: position.ticker, text: "有交易缺少成交价" });
+        }
+      });
+
+      return checks;
+    }
+
+    function computeAnnualSummary() {
+      const raw = state.raw;
+      if (!raw || !state.data) return null;
+      const positions = annualPositions(raw);
+      const priced = positions.filter((position) => position.rows.length);
+      const income = (Array.isArray(raw.income) ? raw.income : [])
+        .map((entry) => ({ time: dayTime(entry.date), amount: Number(entry.amount) }))
+        .filter((entry) => entry.time !== null && Number.isFinite(entry.amount));
+      const checks = annualChecks(raw, positions);
+      if (!priced.length && !income.length) return { years: [], tickers: [], checks, incomeCount: 0 };
+
+      const asOfTime = dayTime(raw.asOf);
+      const latestCandidate = Math.max(
+        asOfTime ?? -Infinity,
+        ...priced.map((position) => position.rows[position.rows.length - 1].time)
+      );
+      const latestTime = Number.isFinite(latestCandidate) ? latestCandidate : Date.now();
+      // 当前市值按最新收盘价计算，标注的日期也用最新收盘日，而不是数据的 asOf。
+      const latestPriceTime = priced.length
+        ? Math.max(...priced.map((position) => position.rows[position.rows.length - 1].time))
+        : latestTime;
+      const firstTime = Math.min(
+        ...priced.map((position) => position.orders[0].time),
+        ...income.map((entry) => entry.time)
+      );
+      const firstYear = new Date(firstTime).getFullYear();
+      const currentYear = Math.max(new Date(latestTime).getFullYear(), firstYear);
+
+      const years = [];
+      for (let year = firstYear; year <= currentYear; year++) {
+        const start = dayTime(`${year - 1}-12-31`);
+        const current = year === currentYear;
+        const end = current ? Infinity : dayTime(`${year}-12-31`);
+        const weightEnd = current ? latestTime : end;
+        // 权重按整天计算，避免夏令时切换带来的一小时误差。
+        const spanDays = Math.max(Math.round((weightEnd - start) / DAY_MS), 1);
+        const entry = {
+          year,
+          current,
+          stockPnl: 0,
+          income: 0,
+          startValue: 0,
+          endValue: 0,
+          buys: 0,
+          sells: 0,
+          basis: 0,
+          byTicker: new Map()
+        };
+
+        priced.forEach((position) => {
+          const sharesStart = sharesAt(position.orders, start);
+          const inYear = position.orders.filter((order) => order.time > start && order.time <= end);
+          if (!sharesStart && !inYear.length) return;
+          const startValue = sharesStart ? sharesStart * markPrice(position.rows, position.orders, start) : 0;
+          const sharesEnd = sharesAt(position.orders, end);
+          const endValue = sharesEnd ? sharesEnd * markPrice(position.rows, position.orders, end) : 0;
+          let buys = 0;
+          let sells = 0;
+          let weighted = 0;
+          inYear.forEach((order) => {
+            const amount = order.shares * (order.price > 0 ? order.price : 0);
+            if (order.side === "sell") sells += amount;
+            else buys += amount;
+            const weight = Math.min(1, Math.max(0, Math.round((weightEnd - order.time) / DAY_MS) / spanDays));
+            weighted += (order.side === "sell" ? -amount : amount) * weight;
+          });
+          const pnl = endValue - startValue - (buys - sells);
+          entry.stockPnl += pnl;
+          entry.startValue += startValue;
+          entry.endValue += endValue;
+          entry.buys += buys;
+          entry.sells += sells;
+          entry.basis += startValue + weighted;
+          entry.byTicker.set(position.ticker, pnl);
+        });
+
+        entry.income = income
+          .filter((item) => item.time > start && item.time <= end)
+          .reduce((sum, item) => sum + item.amount, 0);
+        entry.pnl = entry.stockPnl + entry.income;
+        entry.returnPct = entry.basis > 0 ? entry.stockPnl / entry.basis * 100 : null;
+        years.push(entry);
+      }
+
+      const tickers = priced
+        .map((position) => {
+          const byYear = years.map((entry) => (entry.byTicker.has(position.ticker) ? entry.byTicker.get(position.ticker) : null));
+          const holding = state.data.holdings.find((item) => item.ticker === position.ticker);
+          return {
+            ticker: position.ticker,
+            name: holding?.nameZh || holding?.name || raw.trading[position.ticker]?.nameZh || "",
+            byYear,
+            total: byYear.reduce((sum, value) => sum + (value || 0), 0)
+          };
+        })
+        .filter((row) => row.byYear.some((value) => value !== null))
+        .sort((a, b) => b.total - a.total);
+
+      return { years, tickers, checks, latestPriceTime, incomeCount: income.length };
+    }
+
+    function renderAnnualSummary() {
+      const yearsEl = $("annualYears");
+      const tableEl = $("annualTable");
+      const notesEl = $("annualNotes");
+      yearsEl.innerHTML = "";
+      tableEl.innerHTML = "";
+      notesEl.innerHTML = "";
+
+      // 年度收益出错不能影响其余页面。
+      try {
+        const summary = computeAnnualSummary();
+        if (!summary) return;
+        const notes = [];
+
+        if (!summary.years.length) {
+          notes.push("<div>暂无股票 / ETF 交易记录，无法计算年度收益。</div>");
+        } else {
+          summary.years.forEach((entry) => {
+            const netFlow = entry.buys - entry.sells;
+            const tile = document.createElement("div");
+            tile.className = "annual-year";
+            const valueLine = entry.current
+              ? `当前市值 ${formatCurrency(entry.endValue)} · 截至 ${formatChartTime(summary.latestPriceTime)}`
+              : `年末市值 ${formatCurrency(entry.endValue)}`;
+            tile.innerHTML = `
+              <div class="annual-year-label">${entry.year} ${entry.current ? "年初至今" : "全年"}</div>
+              <div class="annual-year-value gain ${entry.pnl < 0 ? "negative" : ""}">${formatSignedCurrency(entry.pnl)}</div>
+              <div class="annual-year-sub">收益率 ${entry.returnPct === null ? "–" : formatSignedPct(entry.returnPct)} · ${netFlow >= 0 ? "净投入" : "净取出"} ${formatCurrency(Math.abs(netFlow))}</div>
+              <div class="annual-year-sub">${valueLine}${summary.incomeCount ? ` · 含利息 / 股息 ${formatSignedCurrency(entry.income)}` : ""}</div>
+            `;
+            yearsEl.appendChild(tile);
+          });
+
+          const cell = (value) => (value === null
+            ? '<td class="empty-cell">–</td>'
+            : `<td class="gain ${value < 0 ? "negative" : ""}">${formatSignedCurrency(value)}</td>`);
+          if (summary.tickers.length) {
+            const head = summary.years.map((entry) => `<th>${entry.year}${entry.current ? " 至今" : ""}</th>`).join("");
+            const body = summary.tickers
+              .map((row) => `<tr><td>${escapeHtml(row.ticker)}<span class="annual-name">${escapeHtml(row.name)}</span></td>${row.byYear.map(cell).join("")}${cell(row.total)}</tr>`)
+              .join("");
+            const stockTotals = summary.years.map((entry) => entry.stockPnl);
+            let foot = `<tr><td>股票 / ETF 合计</td>${stockTotals.map(cell).join("")}${cell(stockTotals.reduce((sum, value) => sum + value, 0))}</tr>`;
+            if (summary.incomeCount) {
+              const incomes = summary.years.map((entry) => entry.income);
+              foot += `<tr><td>利息 / 股息</td>${incomes.map(cell).join("")}${cell(incomes.reduce((sum, value) => sum + value, 0))}</tr>`;
+            }
+            tableEl.innerHTML = `<table class="annual-table"><thead><tr><th>股票</th>${head}<th>合计</th></tr></thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table>`;
+          }
+
+          notes.push("<div>收益 = 年末市值 − 年初市值 − 当年净投入，已含卖出实现的盈亏；收益率按资金在年内停留的时间加权（Modified Dietz），只统计股票 / ETF。</div>");
+          notes.push(summary.incomeCount
+            ? `<div>已计入 ${summary.incomeCount} 条利息 / 股息记录。</div>`
+            : "<div>未包含 CD 利息和股息：当前数据只有累计值，没有按日期的记录。</div>");
+        }
+
+        summary.checks.forEach((check) => {
+          notes.push(`<div class="annual-warning">⚠ 需要核对 ${escapeHtml(check.ticker)}：${escapeHtml(check.text)}</div>`);
+        });
+        notesEl.innerHTML = notes.join("");
+      } catch (err) {
+        console.error("年度收益计算失败", err);
+        yearsEl.innerHTML = "";
+        tableEl.innerHTML = "";
+        notesEl.innerHTML = "<div>年度收益暂时无法计算。</div>";
+      }
+    }
+
     function renderRanking() {
       const list = $("rankList");
       const ranked = [...state.data.holdings]
@@ -3191,6 +3604,7 @@
       renderGainChart();
       renderPerformanceList();
       renderRanking();
+      renderAnnualSummary();
       renderTrading();
       updateHoldingSelection(false);
       updatePerformanceSelection(false);

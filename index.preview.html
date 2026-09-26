@@ -26,7 +26,6 @@
       --pill-down: #ff5000;
       --slice: #c5ccc3;
       --slice-active: #0b0f0c;
-      --warning-text: #8a5a00;
       --card-radius: 12px;
       --pill-radius: 999px;
       --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -51,7 +50,6 @@
         --pill-down: #d23f00;
         --slice: #3a3f3b;
         --slice-active: #ffffff;
-        --warning-text: #f0b441;
       }
     }
 
@@ -777,10 +775,6 @@
       color: var(--muted);
       font-size: 12px;
       line-height: 1.55;
-    }
-
-    .annual-warning {
-      color: var(--warning-text);
     }
 
     .gain {
@@ -3247,8 +3241,6 @@
       return price;
     }
 
-    const formatShares = (value) => new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(value);
-
     // 只用数据里的真实交易记录和真实价格（公开行情优先，其次内置价格），不用预览生成的示例数据。
     function annualPositions(raw) {
       const trading = raw.trading && typeof raw.trading === "object" ? raw.trading : {};
@@ -3267,54 +3259,9 @@
             ? normalizePublicPriceRows(priceRowsFromMarketData(state.marketPrices, ticker))
             : [];
           const rows = publicRows.length ? publicRows : normalizePublicPriceRows(item?.prices);
-          return { ticker, orders, rows, missingPrice: orders.some((order) => !(order.price > 0)) };
+          return { ticker, orders, rows };
         })
         .filter((position) => position.orders.length);
-    }
-
-    // 用持仓市值反推股数，与交易记录累计的股数比对；对不上通常是漏记交易、拆股或股息再投资。
-    function annualChecks(raw, positions) {
-      const checks = [];
-      const asOfTime = dayTime(raw.asOf) ?? Infinity;
-      const holdings = state.data.holdings.filter(isTradableHolding);
-      const byTicker = new Map(positions.map((position) => [position.ticker, position]));
-
-      holdings.forEach((holding) => {
-        const position = byTicker.get(holding.ticker);
-        if (!position) {
-          checks.push({ ticker: holding.ticker, text: "缺少交易记录，未计入" });
-          return;
-        }
-        if (!position.rows.length) return;
-        const close = closeOnOrBefore(position.rows, asOfTime);
-        const value = Number(holding.value);
-        if (!(close > 0) || !(value > 0)) return;
-        const implied = value / close;
-        const recorded = sharesAt(position.orders, asOfTime);
-        if (Math.abs(recorded - implied) > Math.max(implied * 0.04, 0.01)) {
-          checks.push({
-            ticker: holding.ticker,
-            text: `交易记录合计 ${formatShares(recorded)} 股，按持仓市值推算约 ${formatShares(implied)} 股`
-          });
-        }
-      });
-
-      positions.forEach((position) => {
-        if (!position.rows.length) {
-          checks.push({ ticker: position.ticker, text: "缺少价格数据，未计入" });
-        }
-        if (!holdings.some((holding) => holding.ticker === position.ticker)) {
-          const remaining = sharesAt(position.orders, Infinity);
-          if (remaining > 1e-6) {
-            checks.push({ ticker: position.ticker, text: `交易记录显示仍持有 ${formatShares(remaining)} 股，但持仓里没有` });
-          }
-        }
-        if (position.missingPrice) {
-          checks.push({ ticker: position.ticker, text: "有交易缺少成交价" });
-        }
-      });
-
-      return checks;
     }
 
     function computeAnnualSummary() {
@@ -3325,8 +3272,7 @@
       const income = (Array.isArray(raw.income) ? raw.income : [])
         .map((entry) => ({ time: dayTime(entry.date), amount: Number(entry.amount) }))
         .filter((entry) => entry.time !== null && Number.isFinite(entry.amount));
-      const checks = annualChecks(raw, positions);
-      if (!priced.length && !income.length) return { years: [], tickers: [], checks, incomeCount: 0 };
+      if (!priced.length && !income.length) return { years: [], tickers: [], incomeCount: 0 };
 
       const asOfTime = dayTime(raw.asOf);
       const latestCandidate = Math.max(
@@ -3415,7 +3361,7 @@
         .filter((row) => row.byYear.some((value) => value !== null))
         .sort((a, b) => b.total - a.total);
 
-      return { years, tickers, checks, latestPriceTime, incomeCount: income.length };
+      return { years, tickers, latestPriceTime, incomeCount: income.length };
     }
 
     function renderAnnualSummary() {
@@ -3474,9 +3420,6 @@
             : "<div>未包含 CD 利息和股息：当前数据只有累计值，没有按日期的记录。</div>");
         }
 
-        summary.checks.forEach((check) => {
-          notes.push(`<div class="annual-warning">⚠ 需要核对 ${escapeHtml(check.ticker)}：${escapeHtml(check.text)}</div>`);
-        });
         notesEl.innerHTML = notes.join("");
       } catch (err) {
         console.error("年度收益计算失败", err);

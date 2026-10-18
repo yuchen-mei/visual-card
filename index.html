@@ -1485,16 +1485,24 @@
           <div class="main-grid">
             <section class="chart-card">
               <div class="chart-wrap">
-                <svg id="holdingsChart" viewBox="0 0 360 360" role="img" aria-label="持仓分布"></svg>
+                <svg id="holdingsChart" viewBox="0 0 360 360" role="img" aria-label="证券持仓分布"></svg>
               </div>
 
               <div class="summary-strip holdings-summary">
                 <div class="summary-item">
-                  <div class="summary-label">最大仓位</div>
+                  <div class="summary-label">证券市值</div>
+                  <div id="securitiesValue" class="summary-value"></div>
+                </div>
+                <div class="summary-item">
+                  <div class="summary-label">现金</div>
+                  <div id="cashValue" class="summary-value"></div>
+                </div>
+                <div class="summary-item">
+                  <div class="summary-label">最大证券仓位</div>
                   <div id="largestHolding" class="summary-value"></div>
                 </div>
                 <div class="summary-item">
-                  <div class="summary-label">持仓数</div>
+                  <div class="summary-label">证券持仓数</div>
                   <div id="holdingCount" class="summary-value"></div>
                 </div>
               </div>
@@ -1502,8 +1510,8 @@
 
             <section class="list-card">
               <div class="list-head">
-                <strong>持仓明细</strong>
-                <span>悬停预览 · 点击固定</span>
+                <strong>证券持仓明细</strong>
+                <span>占比基于证券市值</span>
               </div>
               <div id="holdingList" class="holding-list"></div>
             </section>
@@ -2008,19 +2016,26 @@
     }
 
     function normalizeData(data) {
-      const holdings = normalizeCashHoldings(data.holdings)
-        .filter((item) => Number(item.value) > 0)
+      // Retain the complete asset collection so normalizing an already normalized
+      // view neither loses cash nor adds it a second time.
+      const assetHoldings = normalizeCashHoldings(data.assetHoldings || data.holdings)
+        .filter((item) => Number(item.value) > 0);
+      const cashValue = assetHoldings.filter(isCashHolding)
+        .reduce((sum, item) => sum + Number(item.value), 0);
+      const holdings = assetHoldings.filter((item) => !isCashHolding(item))
+        .map((item) => ({ ...item }))
         .sort((a, b) => b.value - a.value);
 
-      const total = holdings.reduce((sum, item) => sum + Number(item.value), 0);
+      const equityValue = holdings.reduce((sum, item) => sum + Number(item.value), 0);
 
       holdings.forEach((item) => {
-        item.weight = Number(item.value) / total * 100;
+        item.weight = equityValue ? Number(item.value) / equityValue * 100 : 0;
       });
 
       const preserved = data.historyStatus?.state === "preserved";
       const history = preserved ? data.historySnapshot : null;
-      const trading = normalizeTradingData(history?.trading || data.trading, holdings, data.asOf);
+      const trading = normalizeTradingData(history?.trading || data.trading,
+        [...(history?.holdings || []), ...(data.assetHoldings || data.holdings || [])], data.asOf);
       const oldPerformance = data.basisRevision?.cumulativeGainCorrected
         ? (data.performance || {}) : (history?.performance || data.performance || {});
       // A fresh balance snapshot cannot reconcile or rewrite incomplete historical returns.
@@ -2030,7 +2045,10 @@
 
       return {
         ...data,
-        equityValue: total,
+        equityValue,
+        cashValue,
+        totalAssetValue: equityValue + cashValue,
+        assetHoldings,
         holdings,
         performance,
         trading
@@ -2040,7 +2058,8 @@
     function isCashHolding(item) {
       const type = String(item.type || "").toLowerCase();
       const ticker = String(item.ticker || "").toUpperCase();
-      return /现金|存款|储蓄|cash|checking|saving|sweep/.test(type)
+      return item.is_cash_equivalent === true || item.isCashEquivalent === true
+        || /现金|存款|储蓄|cash|checking|saving|sweep/.test(type)
         || type === "cd" || ticker === "CD" || ticker === "CASH";
     }
 
@@ -2253,8 +2272,15 @@
           .filter(isTradableHolding)
           .map((item) => [item.ticker, { nameZh: item.nameZh || item.name || "", prices: [], orders: [] }])
       );
-      Object.entries(trading || {}).forEach(([ticker, item]) => {
+      const entries = Array.isArray(trading)
+        ? trading.map((item) => [item.ticker, item]) : Object.entries(trading || {});
+      entries.forEach(([ticker, item]) => {
         if (!item || typeof item !== "object" || item.priceSource === "preview") return;
+        const matchingHoldings = holdings.filter((holding) => String(holding.ticker).toUpperCase() === String(ticker).toUpperCase());
+        // Cash may have a source-specific symbol. An exited security, however,
+        // is still a security even when absent from today's holdings.
+        if (!isTradableHolding({ ...item, ticker })
+          || (matchingHoldings.length && matchingHoldings.every(isCashHolding))) return;
         source.set(ticker, {
           ...source.get(ticker),
           ...item,
@@ -2368,7 +2394,7 @@
         state.data = normalizeData(data);
         state.dataVersion += 1;
         state.marketPrices = null;
-        state.selectedHolding = Math.min(state.selectedHolding, state.data.holdings.length - 1);
+        state.selectedHolding = Math.max(0, Math.min(state.selectedHolding, state.data.holdings.length - 1));
         state.selectedPerformance = Math.min(state.selectedPerformance, state.data.performance.items.length - 1);
         state.selectedTradingTicker = state.data.trading.some((item) => item.ticker === state.selectedTradingTicker)
           ? state.selectedTradingTicker
@@ -2550,7 +2576,7 @@
 
     function renderHoldingsChart() {
       const holdings = state.data.holdings;
-      const index = Math.min(shownHolding(), holdings.length - 1);
+      const index = Math.max(0, Math.min(shownHolding(), holdings.length - 1));
       const selected = holdings[index];
 
       // 强调式配色：选中项用墨色，其余统一灰色；涨跌色只留给盈亏。
@@ -2562,7 +2588,10 @@
         "holding",
         selectHolding,
         (center) => {
-          if (!selected) return;
+          if (!selected) {
+            addSvgText(center, "暂无证券持仓", { x: "180", y: "180", class: "center-sub" });
+            return;
+          }
           addSvgText(center, selected.ticker, { id: "holdingsChartTitle", x: "180", y: "148", class: "center-title" });
           addSvgText(center, holdingCenterLabel(selected), { id: "holdingsChartSubtitle", x: "180", y: "170", class: "center-sub" });
           addSvgText(center, formatPct(selected.weight), { id: "holdingsChartPct", x: "180", y: "206", class: "center-value" });
@@ -2598,7 +2627,7 @@
 
     function updateHoldingSelection() {
       const holdings = state.data.holdings;
-      const index = Math.min(shownHolding(), holdings.length - 1);
+      const index = Math.max(0, Math.min(shownHolding(), holdings.length - 1));
       const selected = holdings[index];
       if (!selected) return;
 
@@ -2632,7 +2661,7 @@
 
     function selectHolding(index) {
       dropPreview("holding");
-      state.selectedHolding = index;
+      state.selectedHolding = Math.max(0, Math.min(index, state.data.holdings.length - 1));
       updateHoldingSelection();
     }
 
@@ -2666,8 +2695,15 @@
 
     function renderHoldingList() {
       const list = $("holdingList");
-      const shown = shownHolding();
+      const shown = Math.max(0, Math.min(shownHolding(), state.data.holdings.length - 1));
       list.innerHTML = "";
+
+      if (!state.data.holdings.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty-note";
+        empty.textContent = "暂无证券持仓";
+        list.appendChild(empty);
+      }
 
       state.data.holdings.forEach((item, index) => {
         const row = document.createElement("div");
@@ -3329,7 +3365,12 @@
       const cutoff = options.cutoff ?? Infinity;
       const trading = raw.trading && typeof raw.trading === "object" ? raw.trading : {};
       return Object.entries(trading)
-        .filter(([, item]) => item?.priceSource !== "preview")
+        .filter(([ticker, item]) => {
+          if (!item || item.priceSource === "preview" || !isTradableHolding({ ...item, ticker })) return false;
+          const matchingHoldings = (raw.assetHoldings || raw.holdings || [])
+            .filter((holding) => String(holding.ticker).toUpperCase() === String(ticker).toUpperCase());
+          return !matchingHoldings.length || !matchingHoldings.every(isCashHolding);
+        })
         .map(([ticker, item]) => {
           const orders = (Array.isArray(item?.orders) ? item.orders : [])
             .map((order) => ({
@@ -3599,6 +3640,8 @@
       $("meta").textContent = `${assetDate}${retrieved} · ${data.currency || "USD"} · 现金 + 股票 / ETF`;
       $("largestHolding").textContent = largest ? `${largest.ticker} ${formatPct(largest.weight)}` : "–";
       $("holdingCount").textContent = `${holdings.length} 个`;
+      $("securitiesValue").textContent = formatCurrency(data.equityValue);
+      $("cashValue").textContent = formatCurrency(data.cashValue);
       $("historyNotice").hidden = !preserved;
       $("historyNotice").textContent = preserved ? `${corrected ? "累计现金利息已按用户确认更正；更正的入账日期未知，其余历史收益保留。" : `累计收益保留截至 ${historyDate} 的原值；`}历史资料不完整，年度收益暂缺，已有记录保留。当前资产快照单独展示。${corrected ? "转账是否已反映在余额中尚未确认；不据此新增现金。" : data.historyReview?.state === "awaiting_dated_evidence" ? "另有待确认日期的现金利息调整，尚未计入收益。" : ""}` : "";
       $("performanceValueLabel").textContent = preserved ? "历史展示资产" : "当前展示资产";
@@ -3621,7 +3664,7 @@
 
     function renderHero(data, perf) {
       const preserved = data.historyStatus?.state === "preserved";
-      const current = preserved || data.assetSnapshot ? data.equityValue : finiteOrNull(perf.totalCurrentValue) ?? data.equityValue;
+      const current = data.totalAssetValue;
       $("heroValue").textContent = formatCurrency(current);
       const gain = finiteOrNull(perf.totalGain);
       const pct = perf.totalReturnPct == null ? null : finiteOrNull(perf.totalReturnPct);

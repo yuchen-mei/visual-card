@@ -108,7 +108,9 @@ test("preserved performance never reconciles against updated holdings", () => {
   const before = JSON.stringify(raw);
   activate(raw);
   const normalized = context.state.data;
-  assert.equal(normalized.equityValue, 600);
+  assert.equal(normalized.totalAssetValue, 600);
+  assert.equal(normalized.equityValue, 280);
+  assert.equal(normalized.cashValue, 320);
   for (const key of ["totalCurrentValue", "totalPrincipal", "totalGain", "totalReturnPct"]) {
     assert.equal(normalized.performance[key], raw.historySnapshot.performance[key]);
   }

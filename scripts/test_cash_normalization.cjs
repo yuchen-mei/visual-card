@@ -233,7 +233,10 @@ test("normalization is idempotent and does not mutate frozen source data", () =>
   assert.deepEqual(plain(context.normalizeCashHoldings(once.holdings)).map(({ weight, ...item }) => item),
     plain(once.holdings).map(({ weight, ...item }) => item));
   assert.deepEqual(plain(context.normalizePerformanceData(once.performance, once.holdings)), plain(once.performance));
-  assert.equal(once.equityValue, 11330);
+  assert.equal(once.totalAssetValue, 11330);
+  assert.equal(once.equityValue, 1200);
+  assert.equal(once.cashValue, 10130);
+  assert.deepEqual(plain(context.normalizeData(once)), plain(once));
   assert.ok(Math.abs(sum(once.holdings, "weight") - 100) < 1e-10);
   assert.equal(once.holdings.some((item) => item === source.holdings[4]), false);
 });
@@ -247,7 +250,9 @@ test("dated income does not increase already recorded balance or cumulative gain
   const withoutIncome = context.normalizeData({ ...source, income: [] });
   assert.deepEqual(plain(withIncome.performance), plain(withoutIncome.performance));
   assert.deepEqual(plain(withIncome.holdings), plain(withoutIncome.holdings));
-  assert.equal(withIncome.equityValue, 11330);
+  assert.equal(withIncome.totalAssetValue, 11330);
+  assert.equal(withIncome.equityValue, 1200);
+  assert.equal(withIncome.cashValue, 10130);
   assert.equal(withIncome.performance.totalGain, 362);
   context.state.raw = source;
   context.state.data = withIncome;

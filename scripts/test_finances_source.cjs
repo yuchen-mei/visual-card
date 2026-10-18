@@ -65,6 +65,31 @@ test("normalizes current assets with independent balances and excludes unapprove
   assert.equal(Object.hasOwn(result.positions.find(p => p.ticker === "DEMO"), "costBasisCents"), false);
 });
 
+test("USD cash is aggregated once while a genuine USD ETF remains a security", () => {
+  const input = fixture();
+  resultOf(input).items = [
+    holding("synthetic-usd-cash", "USD", "cash", 20.25, 1),
+    holding("synthetic-usd-etf", "USD", "etf", 4, 20)
+  ];
+  const before = JSON.stringify(input);
+  const result = normalizeAssetSnapshot(freeze(input));
+  assert.equal(JSON.stringify(input), before);
+  assert.equal(result.positions.length, 1);
+  assert.equal(result.positions[0].ticker, "USD");
+  assert.equal(result.positions[0].type, "etf");
+  assert.equal(result.positions[0].valueCents, 8000);
+  const broker = result.accounts.find(a => a.id === "synthetic-broker");
+  assert.equal(broker.cashCents, 2025);
+  assert.equal(broker.securitiesCents, 8000);
+  assert.equal(broker.totalCents, 10025);
+  assert.equal(broker.totalCents, broker.cashCents + broker.securitiesCents);
+  assert.deepEqual(result.reconciliation, {
+    independentSourceTotals: true, totalValueCents: 16038, cashCents: 8038
+  });
+  assert.equal(result.reconciliation.totalValueCents,
+    result.reconciliation.cashCents + result.positions.reduce((sum, p) => sum + p.valueCents, 0));
+});
+
 test("retrieval, record updates, sync dates and price dates never become balance dates", () => {
   const input = fixture();
   brokerOf(input).balances.last_updated_datetime_source = "record_update";

@@ -251,7 +251,10 @@ function buildPayload(snapshot, previous, {now = Date.now(), market, html, polic
   if (previous.basisRevision || previous.updateAudit?.previousBasisRevision) result.updateAudit.previousBasisRevision = clone(previous.basisRevision || previous.updateAudit.previousBasisRevision);
   const ui = browserContract(html);
   ui.state.raw = clone(result); ui.state.data = ui.normalizeData(clone(result));
-  same(roundedCents(ui.state.data.equityValue), totalValue, "BROWSER_BALANCE_MISMATCH");
+  same(roundedCents(ui.state.data.totalAssetValue), totalValue, "BROWSER_BALANCE_MISMATCH");
+  same(roundedCents(ui.state.data.equityValue), sum(positions.map(p => p.valueCents)), "BROWSER_SECURITIES_MISMATCH");
+  same(roundedCents(ui.state.data.cashValue), sum(accounts.map(a => a.cashCents)), "BROWSER_CASH_MISMATCH");
+  requireThat(ui.state.data.holdings.every(item => !ui.isCashHolding(item)), "BROWSER_CASH_IN_SECURITIES");
   same(roundedCents(sum(ui.state.data.performance.items.map(i => i.gain))), gain, "BROWSER_CUMULATIVE_MISMATCH");
   requireThat(ui.state.data.performance.items.every(i => i.kind !== "other_income"), "BROWSER_UNEXPLAINED_RESIDUAL");
   const annualShape = years => years.map(y => ({year: y.year, stockPnlCents: roundedCents(y.stockPnl), incomeCents: roundedCents(y.income), pnlCents: roundedCents(y.pnl)}));
@@ -446,7 +449,10 @@ function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy} 
   if(previous.userConfirmedCapital)validateManualCapital(previous.userConfirmedCapital);
   // Verify through the actual production display path, with old history frozen.
   const ui=browserContract(html), normalized=ui.normalizeData(clone(next));
-  same(roundedCents(normalized.equityValue),total,"BROWSER_BALANCE_MISMATCH");
+  same(roundedCents(normalized.totalAssetValue),total,"BROWSER_BALANCE_MISMATCH");
+  same(roundedCents(normalized.equityValue),total-cash,"BROWSER_SECURITIES_MISMATCH");
+  same(roundedCents(normalized.cashValue),cash,"BROWSER_CASH_MISMATCH");
+  requireThat(normalized.holdings.every(item=>!ui.isCashHolding(item)),"BROWSER_CASH_IN_SECURITIES");
   for(const key of ["totalGain","totalPrincipal","totalCurrentValue","totalReturnPct"])same(normalized.performance[key],previous.performance[key],"PRESERVED_PERFORMANCE_CHANGED");
   for(const key of ["performance","trading","income"])same(next[key],previous[key],"PRESERVED_HISTORY_CHANGED");
   return next;

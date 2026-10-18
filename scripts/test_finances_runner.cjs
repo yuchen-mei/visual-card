@@ -123,7 +123,7 @@ test("dry-run fetches main and tests before validation without writing or publis
   assert.deepEqual(f.run(), { status: "validated" });
   assert.ok(fs.readFileSync(f.dataPath).equals(envelope()));
   assert.deepEqual(f.calls.filter(({ binary, args }) => binary === process.execPath && path.basename(args[0]).startsWith("test_")).map(({ args }) => path.basename(args[0])), [
-    "test_cash_normalization.cjs", "test_snapshot_display.cjs",
+    "test_cash_normalization.cjs", "test_security_holdings.cjs", "test_snapshot_display.cjs",
     "test_finances_update.cjs", "test_asset_update.cjs", "test_basis_revision.cjs",
     "test_finances_source.cjs", "test_finances_daily.cjs", "test_finances_orchestrator.cjs",
     "test_finances_github.cjs", "test_finances_release.cjs", "test_finances_journal.cjs",

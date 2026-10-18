@@ -115,7 +115,7 @@ node scripts/run_finances_update.cjs --input /private/snapshot.json --policy /pr
 
 `run_finances_update.cjs` 要求干净 main、准确的本仓库 HTTPS origin、无本地未推送提交，先 fetch/fast-forward，再执行固定的全部独立 Node 合成测试和校验。只有显式 `--publish` 才能提交并 push 已验证、确实变化的单个密文文件。它不会提交源码、安装依赖、配置凭据或创建任务；它使用的本地 Git 认证必须另行具备，不从 GitHub connector 借取凭据。
 
-固定测试清单在 `run_finances_update.cjs` 中维护，覆盖展示归类、资产与历史、用户更正、来源分页、传输与工具接线、日志、每日/首次发布、调度及本地 Git 保护。可逐项用 `node scripts/test_*.cjs` 中的具体文件名运行；不要把 shell 通配符展开成同一个 Node 命令的参数列表。测试使用合成数据或模拟连接，不把成功解释为真实发布或任务启用。
+固定测试清单在 `run_finances_update.cjs` 中维护，覆盖展示归类、资产与历史、用户更正、来源分页、传输与工具接线、日志、每日/首次发布、调度及本地 Git 保护。其中 `test_security_holdings.cjs` 核对证券列表、权重和选择状态仅使用证券，现金单独汇总且只计入总资产一次。可逐项用 `node scripts/test_*.cjs` 中的具体文件名运行；不要把 shell 通配符展开成同一个 Node 命令的参数列表。测试使用合成数据或模拟连接，不把成功解释为真实发布或任务启用。
 
 原生部署测试单独执行：`python3 scripts/native/test_keychain_preflight.py` 构建无密码预检程序；`node scripts/native/test_keychain_helper.cjs <TEST_ONLY_HELPER_PATH>` 只接受独立的测试构建。它们需要 Mac 编译/签名环境，helper 测试需要先按设计说明构建测试专用程序，因此不在每次日常更新中重新编译运行。
 

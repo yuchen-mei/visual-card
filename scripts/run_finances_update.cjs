@@ -14,7 +14,7 @@ const MAX_ENVELOPE_BYTES = 24 * 1024 * 1024;
 // Self-contained synthetic Node suites. Native deployment checks need a separate
 // test-only signed helper and are documented in docs/finances-update.md.
 const VALIDATION_TESTS = Object.freeze([
-  "test_cash_normalization.cjs", "test_snapshot_display.cjs",
+  "test_cash_normalization.cjs", "test_security_holdings.cjs", "test_snapshot_display.cjs",
   "test_finances_update.cjs", "test_asset_update.cjs", "test_basis_revision.cjs",
   "test_finances_source.cjs", "test_finances_daily.cjs", "test_finances_orchestrator.cjs",
   "test_finances_github.cjs", "test_finances_release.cjs", "test_finances_journal.cjs",

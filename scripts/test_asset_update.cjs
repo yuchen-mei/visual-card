@@ -21,6 +21,22 @@ test("reconciled assets update independently while old history stays exact",()=>
  assert.deepEqual(data.historySnapshot.performance,old.performance);
  assert.equal(data.historyStatus.asOf,old.asOf);assert.equal(data.historyStatus.state,"preserved");
 });
+test("nine raw asset rows render as eight securities plus separate reconciled cash",()=>{
+ const s=snapshot();
+ s.positions=Array.from({length:8},(_,i)=>({accountId:"synthetic-broker",ticker:`DEMO${String.fromCharCode(65+i)}`,type:i%2?"etf":"stock",shares:1,valueCents:10000+i*100,priceAsOf:"2026-10-17"}));
+ s.accounts[0].securitiesCents=s.positions.reduce((n,p)=>n+p.valueCents,0);
+ s.accounts[0].totalCents=s.accounts[0].cashCents+s.accounts[0].securitiesCents;
+ s.reconciliation.totalValueCents=s.accounts.reduce((n,a)=>n+a.totalCents,0);
+ const data=build(s),ui=U.browserContract(html),normalized=ui.normalizeData(data);
+ assert.equal(data.holdings.length,9);assert.equal(data.holdings.filter(h=>h.type==="cash").length,1);
+ assert.equal(normalized.holdings.length,8);assert.ok(normalized.holdings.every(h=>!ui.isCashHolding(h)));
+ assert.equal(normalized.equityValue*100,s.accounts[0].securitiesCents);
+ assert.equal(normalized.cashValue*100,s.reconciliation.cashCents);
+ assert.equal(normalized.totalAssetValue*100,s.reconciliation.totalValueCents);
+ assert.equal(normalized.totalAssetValue,normalized.equityValue+normalized.cashValue);
+ assert.ok(Math.abs(normalized.holdings.reduce((n,h)=>n+h.weight,0)-100)<1e-9);
+ assert.equal(data.holdings.find(h=>h.type==="cash").value,normalized.cashValue);
+});
 test("unknown balance date remains null and is distinct from retrieval",()=>{
  const data=build();assert.deepEqual(data.assetSnapshot,{retrievedAt:"2026-10-18T02:00:00Z",sourceAsOf:null,sourceDateStatus:"unknown"});
  assert.ok(data.assetAudit.accountSourceDates.every(a=>a.balanceSourceAsOf===null));

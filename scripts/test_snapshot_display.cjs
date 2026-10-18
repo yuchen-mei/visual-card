@@ -121,7 +121,7 @@ test("preserved performance never reconciles against updated holdings", () => {
   assert.equal(JSON.stringify(raw), before);
 });
 
-test("incomplete annual history stays unavailable despite current public quotes", () => {
+test("real trade quotes refresh while incomplete annual history stays unchanged", () => {
   const raw = fixture();
   raw.historySnapshot.trading.EXAMPLE.prices.push({ date: "2025-02-10", close: 900 });
   raw.historySnapshot.trading.EXAMPLE.orders.push({ date: "2025-02-10", side: "buy", shares: 99, price: 900 });
@@ -129,8 +129,9 @@ test("incomplete annual history stays unavailable despite current public quotes"
   activate(freeze(raw));
   const market = { prices: { EXAMPLE: [{ date: "2024-01-10", close: 100 }, { date: "2025-02-10", close: 800 }] } };
   const tradingBefore = JSON.stringify(context.state.data.trading);
-  assert.equal(context.applyPublicMarketPrices(market), 0);
-  assert.equal(JSON.stringify(context.state.data.trading), tradingBefore);
+  assert.equal(context.applyPublicMarketPrices(market), 1);
+  assert.notEqual(JSON.stringify(context.state.data.trading), tradingBefore);
+  assert.equal(context.state.data.trading[0].prices.at(-1).close,800);
   context.state.marketPrices = market;
   const result = context.computeAnnualSummary();
   assert.deepEqual(plain(result.years), []);
@@ -147,6 +148,19 @@ test("legacy preserved history works without an additional historySnapshot", () 
   assert.equal(context.state.data.performance.items[0].gain, 20);
   assert.deepEqual(plain(context.computeAnnualSummary().years), []);
   assert.equal(context.computeAnnualSummary().annualUnavailable,true);
+});
+
+test("unrevalidated history is not described as missing and retains its dated cutoff",()=>{
+  const raw=fixture();raw.historyStatus.reason="history_not_revalidated";
+  activate(raw);context.state.marketPrices={prices:{EXAMPLE:[{date:"2024-01-10",close:100},{date:"2025-02-10",close:900}]}};
+  context.renderSummary();context.renderAnnualSummary();
+  assert.match(element("historyNotice").textContent,/本轮仅更新资产，未重新核验历史收益/);
+  assert.doesNotMatch(element("historyNotice").textContent,/历史资料不完整|年度收益暂缺/);
+  assert.match(element("annualNotes").innerHTML,/本轮资产更新未重新核验历史收益/);
+  assert.doesNotMatch(element("annualNotes").innerHTML,/历史资料不完整|年度收益暂缺/);
+  const summary=context.computeAnnualSummary();
+  assert.equal(summary.historyAsOf,"2024-06-30");assert.equal(summary.years.length,1);
+  assert.equal(summary.years[0].stockPnl,20);
 });
 
 test("unknown historical cutoff does not invent an annual date", () => {

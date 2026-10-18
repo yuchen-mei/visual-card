@@ -86,6 +86,37 @@ function browserContract(html) {
   return context;
 }
 
+// Display names come only from saved metadata, never from a new provider payload.
+// A ticker-only placeholder must not hide an older confirmed security label.
+function preservedSecurityNames(previous) {
+  const names = new Map();
+  const tickerOf = value => typeof value === "string" ? value.trim().toUpperCase() : "";
+  const isCash = item => item.is_cash_equivalent === true || item.isCashEquivalent === true
+    || /现金|存款|储蓄|cash|checking|saving|sweep/.test(String(item.type || "").toLowerCase())
+    || String(item.type || "").toLowerCase() === "cd" || ["CD", "CASH"].includes(tickerOf(item.ticker));
+  const remember = item => {
+    if (!item || typeof item !== "object") return;
+    const ticker = tickerOf(item.ticker);
+    if (!ticker || isCash(item) || names.has(ticker) || typeof item.nameZh !== "string"
+      || !item.nameZh.trim() || tickerOf(item.nameZh) === ticker) return;
+    names.set(ticker, item.nameZh);
+  };
+  for (const saved of [previous, previous?.historySnapshot]) {
+    const holdings = Array.isArray(saved?.holdings) ? saved.holdings : [];
+    holdings.forEach(remember);
+    const entries = Array.isArray(saved?.trading)
+      ? saved.trading.filter(item => item && typeof item === "object").map(item => [item.ticker, item])
+      : Object.entries(saved?.trading || {});
+    for (const [ticker, item] of entries) {
+      if (!item || typeof item !== "object") continue;
+      const matching = holdings.filter(h => h && tickerOf(h.ticker) === tickerOf(ticker));
+      if (matching.length && matching.every(isCash)) continue;
+      remember({...item, ticker});
+    }
+  }
+  return names;
+}
+
 function buildPayload(snapshot, previous, {now = Date.now(), market, html, policy} = {}) {
   requireThat(snapshot?.schemaVersion === 1 && snapshot.source === "Finances" && snapshot.currency === "USD", "UNSUPPORTED_SOURCE_SCHEMA");
   requireThat(policy && cents(policy.historicalCashInterestCents) > 0 && Array.isArray(policy.accountIds), "APPROVED_PRIVATE_POLICY_REQUIRED");
@@ -120,6 +151,7 @@ function buildPayload(snapshot, previous, {now = Date.now(), market, html, polic
   }
   for (const a of accounts) same(sum(positions.filter(p => p.accountId === a.id).map(p => p.valueCents)), a.securitiesCents, "SECURITIES_BALANCE_MISMATCH");
   const transactions = clone(snapshot.transactions);
+  const savedNames = preservedSecurityNames(previous);
   unique(transactions, t => `${identifier(t.accountId)}:${identifier(t.id)}`, "DUPLICATE_TRANSACTION");
   const kinds = ["buy", "sell", "cash_interest", "dividend", "external_in", "external_out", "transfer_in", "transfer_out"];
   const transfers = new Map(), lots = new Map(), trading = {}, income = [], transactionDigests = [];
@@ -156,7 +188,7 @@ function buildPayload(snapshot, previous, {now = Date.now(), market, html, polic
       requireThat(lot.shares >= -1e-7 && lot.cost >= 0, "INCOMPLETE_POSITION_HISTORY");
       lots.set(lotKey, lot);
       economic.ticker = t.ticker; economic.shares = t.shares;
-      const row = trading[t.ticker] ||= {nameZh: t.ticker, orders: [], prices: []};
+      const row = trading[t.ticker] ||= {nameZh: savedNames.get(t.ticker) || t.ticker, orders: [], prices: []};
       row.orders.push({id: identity, date: t.date, side: t.kind, shares: t.shares, price: Math.abs(t.amountCents) / 100 / t.shares});
     }
     transactionDigests.push({id: identity, digest: hash(canonical(economic))});
@@ -201,7 +233,7 @@ function buildPayload(snapshot, previous, {now = Date.now(), market, html, polic
     const group = positions.filter(p => p.ticker === ticker);
     requireThat(group.every(p => p.type === group[0].type), "INCONSISTENT_SECURITY_TYPE");
     const value = sum(group.map(p => p.valueCents)), cost = sum(group.map(p => p.costBasisCents));
-    holdings.push({ticker, nameZh: ticker, type: group[0].type, shares: sum(group.map(p => p.shares)), value: value / 100, costBasis: cost / 100, unrealizedGain: (value - cost) / 100});
+    holdings.push({ticker, nameZh: savedNames.get(ticker) || ticker, type: group[0].type, shares: sum(group.map(p => p.shares)), value: value / 100, costBasis: cost / 100, unrealizedGain: (value - cost) / 100});
   }
   const totalValue = sum(accounts.map(a => a.totalCents));
   const unrealized = sum(positions.map(p => p.valueCents - p.costBasisCents));
@@ -297,7 +329,9 @@ function freezeHistory(previous) {
   const historyDate=(previous.historyStatus?.state === "preserved" ? previous.historyStatus.asOf : previous.asOf)||null;
   if(historyDate!==null)date(historyDate);
   const historySnapshot=previous.historyStatus?.state === "preserved" && previous.historySnapshot ? clone(previous.historySnapshot) : {asOf:historyDate,holdings:clone(previous.holdings),performance:clone(previous.performance),...(previous.trading!==undefined?{trading:clone(previous.trading)}:{}),...(previous.income!==undefined?{income:clone(previous.income)}:{})};
-  return {...clone(previous),historyStatus:{state:"preserved",asOf:historyDate,reason:"incomplete_history"},historySnapshot};
+  const historyStatus={...clone(previous.historyStatus||{}),state:"preserved",asOf:historyDate};
+  if(previous.historyStatus?.state !== "preserved" && previous.historyStatus?.reason !== "incomplete_history")historyStatus.reason="history_not_revalidated";
+  return {...clone(previous),historyStatus,historySnapshot};
 }
 function attachHistoricalReview(next, review, {html,policy}) {
   requireThat(!next.basisRevision?.cumulativeGainCorrected,"SUPERSEDED_HISTORICAL_REVIEW");
@@ -432,11 +466,12 @@ function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy} 
   same(cents(snapshot.reconciliation.totalValueCents),total,"SOURCE_TOTALS_MISMATCH");
   same(cents(snapshot.reconciliation.cashCents),cash,"SOURCE_TOTALS_MISMATCH");
   const holdings = [{ticker:"CASH",nameZh:"现金",type:"cash",value:cash/100}];
+  const savedNames=preservedSecurityNames(previous);
   for (const ticker of [...new Set(positions.map(p=>p.ticker))].sort()) {
     const group=positions.filter(p=>p.ticker===ticker);
     requireThat(group.every(p=>p.type===group[0].type),"INCONSISTENT_SECURITY_TYPE");
     const value=cents(sum(group.map(p=>p.valueCents)));
-    const holding={ticker,nameZh:ticker,type:group[0].type,shares:sum(group.map(p=>p.shares)),value:value/100};
+    const holding={ticker,nameZh:savedNames.get(ticker)||ticker,type:group[0].type,shares:sum(group.map(p=>p.shares)),value:value/100};
     requireThat(Number.isFinite(holding.shares),"INVALID_POSITION_QUANTITY_SUM");
     if(group.every(p=>Number.isSafeInteger(p.costBasisCents))){
       const cost=cents(sum(group.map(p=>p.costBasisCents)));holding.costBasis=cost/100;holding.unrealizedGain=(value-cost)/100;

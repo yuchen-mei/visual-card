@@ -24,7 +24,7 @@
   function validOperation(value) { return typeof value === "string" && OPERATION.test(value) && !value.includes("//"); }
   function validPath(value) {
     if (typeof value !== "string" || value.length > 240 || value.includes("..")) return false;
-    if ([".gitignore", "README.md", "index.html", "data.enc.json"].includes(value)) return true;
+    if ([".gitignore", "README.md", "index.html", "index.preview.html", "data.enc.json"].includes(value)) return true;
     if (!/^(?:docs\/[A-Za-z0-9][A-Za-z0-9_.-]*\.md|scripts\/[A-Za-z0-9][A-Za-z0-9_.-]*\.(?:cjs|py)|scripts\/native\/[A-Za-z0-9][A-Za-z0-9_.-]*\.(?:swift|py|c|m|cjs))$/.test(value)) return false;
     return !value.split("/").some(part => /(?:^|[_.-])(?:secrets?|credentials?|private[_-]?key|id_rsa|id_ed25519|env)(?:[_.-]|$)/i.test(part));
   }

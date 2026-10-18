@@ -74,6 +74,43 @@ test("historical interest is included once and remains idempotent", () => {
   assert.equal(first.income.filter(i=>i.amount===42.15).length,1);
   assert.equal(first.updateAudit.historicalCashInterest.amountCents,4215);
 });
+test("full updates preserve approved names in holdings and trading across repeated updates",()=>{
+  const old=legacy(),f=fixture();
+  old.holdings=[{ticker:" demo ",type:"stock",nameZh:" 原有合成证券 "}];
+  old.trading={DEMO:{nameZh:"旧交易别名"}};
+  f.positions[0].nameZh="Provider security alias";f.transactions[1].nameZh="Institution alias";
+  const beforeOld=copy(old),beforeSource=copy(f),first=build(f,old),second=build(f,first),baseline=build();
+  for(const data of [first,second]){
+    assert.equal(data.holdings[1].nameZh," 原有合成证券 ");assert.equal(data.trading.DEMO.nameZh," 原有合成证券 ");
+    assert.deepEqual(data.performance,baseline.performance);assert.deepEqual(data.trading.DEMO.orders,baseline.trading.DEMO.orders);
+    assert.deepEqual(data.trading.DEMO.prices,baseline.trading.DEMO.prices);
+    assert.deepEqual({...data.holdings[1],nameZh:"DEMO"},baseline.holdings[1]);
+  }
+  assert.deepEqual(old,beforeOld);assert.deepEqual(f,beforeSource);assert.deepEqual(second,first);
+});
+test("full holdings and trading share current-to-history name recovery and ticker fallback",()=>{
+  for(const [currentTrading,historyHolding,historyTrading,expected] of [
+    ["交易名称","历史持仓","历史交易","交易名称"],
+    [" demo ","历史持仓","历史交易","历史持仓"],
+    ["DEMO","DEMO","历史交易","历史交易"],
+    [null," ",42,"DEMO"]
+  ]){
+    const old=legacy();old.holdings=[{ticker:"DEMO",type:"stock",nameZh:"DEMO"}];
+    old.trading=[{ticker:"demo",nameZh:currentTrading}];
+    old.historySnapshot={holdings:[{ticker:"demo",type:"stock",nameZh:historyHolding}],trading:{DEMO:{nameZh:historyTrading}}};
+    const before=copy(old),data=build(fixture(),old);
+    assert.equal(data.holdings[1].nameZh,expected);assert.equal(data.trading.DEMO.nameZh,expected);
+    assert.deepEqual(old,before);
+  }
+});
+test("full update ignores cash names and source aliases for a real USD security",()=>{
+  const f=fixture(),old=legacy();f.positions[0].ticker="USD";f.positions[0].type="etf";f.positions[0].nameZh="Provider alias";
+  f.transactions.forEach(t=>{if(t.ticker)t.ticker="USD";});f.prices.USD=f.prices.DEMO;delete f.prices.DEMO;
+  old.holdings=[{ticker:"USD",type:"cash",nameZh:"现金账户"}];old.trading={USD:{nameZh:"现金交易"}};
+  old.historySnapshot={holdings:[{ticker:"USD",type:"etf",nameZh:"合成美元基金"}]};
+  const data=build(f,old);assert.equal(data.holdings[1].nameZh,"合成美元基金");assert.equal(data.trading.USD.nameZh,"合成美元基金");
+  delete old.historySnapshot;const unknown=build(f,old);assert.equal(unknown.holdings[1].nameZh,"USD");assert.equal(unknown.trading.USD.nameZh,"USD");
+});
 test("actual frontend annual totals, with and without matching public prices", () => {
   const data=build(), ui=U.browserContract(html);
   ui.state.raw=data;ui.state.data=ui.normalizeData(data);

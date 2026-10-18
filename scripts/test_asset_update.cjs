@@ -37,6 +37,71 @@ test("nine raw asset rows render as eight securities plus separate reconciled ca
  assert.ok(Math.abs(normalized.holdings.reduce((n,h)=>n+h.weight,0)-100)<1e-9);
  assert.equal(data.holdings.find(h=>h.type==="cash").value,normalized.cashValue);
 });
+test("eight saved security names survive consecutive asset updates without mutating inputs",()=>{
+ const s=snapshot(),old=oldData();
+ s.positions=Array.from({length:8},(_,i)=>({accountId:"synthetic-broker",ticker:`DEMO${String.fromCharCode(65+i)}`,type:i%2?"etf":"stock",shares:1,valueCents:10000+i*100,nameZh:"Provider alias",name:"Institution alias"}));
+ s.accounts[0].securitiesCents=s.positions.reduce((n,p)=>n+p.valueCents,0);
+ s.accounts[0].totalCents=s.accounts[0].cashCents+s.accounts[0].securitiesCents;
+ s.reconciliation.totalValueCents=s.accounts.reduce((n,a)=>n+a.totalCents,0);
+ old.holdings=[old.holdings[0],...s.positions.map((p,i)=>({ticker:p.ticker,type:p.type,value:1,nameZh:`合成证券${i+1}`}))];
+ const beforeOld=copy(old),beforeSource=copy(s),first=build(s,old),second=build(s,first);
+ for(const data of [first,second])for(const p of s.positions){
+  const row=data.holdings.find(h=>h.ticker===p.ticker);
+  assert.equal(row.nameZh,old.holdings.find(h=>h.ticker===p.ticker).nameZh);
+  assert.equal(row.type,p.type);assert.equal(row.shares,p.shares);assert.equal(row.value,p.valueCents/100);
+ }
+ assert.deepEqual(old,beforeOld);assert.deepEqual(s,beforeSource);
+ assert.deepEqual(second,first);assert.deepEqual(first.trading,old.trading);
+});
+test("asset names prefer current metadata then recover ticker placeholders from saved history",()=>{
+ for(const [currentHolding,currentTrading,historyHolding,historyTrading,expected] of [
+  [" 当前名称 ","交易名称","历史持仓","历史交易"," 当前名称 "],
+  [" demo ","交易名称","历史持仓","历史交易","交易名称"],
+  ["DEMO"," demo ","历史持仓","历史交易","历史持仓"],
+  ["DEMO","DEMO","DEMO","历史交易","历史交易"],
+  [" ",null,42,"demo","DEMO"]
+ ]){
+  const old=oldData();old.holdings[1].nameZh=currentHolding;old.trading.DEMO.nameZh=currentTrading;
+  old.historyStatus={state:"preserved",asOf:old.asOf,reason:"incomplete_history"};
+  old.historySnapshot={holdings:[{ticker:" demo ",type:"stock",nameZh:historyHolding}],trading:[{ticker:"demo",nameZh:historyTrading}]};
+  const before=copy(old),first=build(snapshot(),old),second=build(snapshot(),first);
+  assert.equal(first.holdings[1].nameZh,expected);assert.equal(second.holdings[1].nameZh,expected);
+  assert.deepEqual(old,before);assert.deepEqual(first.historySnapshot,old.historySnapshot);assert.deepEqual(first.trading,old.trading);
+ }
+});
+test("cash metadata cannot lend its name to a real USD security",()=>{
+ for(const cash of [{type:"cash"},{type:"etf",is_cash_equivalent:true},{type:"etf",isCashEquivalent:true}]){
+  const s=snapshot(),old=oldData();s.positions[0].ticker="USD";s.positions[0].type="etf";
+  old.holdings=[{ticker:"USD",nameZh:"现金账户",value:100,...cash}];old.trading={USD:{nameZh:"现金交易"}};
+  old.historyStatus={state:"preserved",asOf:old.asOf,reason:"incomplete_history"};
+  old.historySnapshot={holdings:[{ticker:"USD",type:"etf",nameZh:"合成美元基金"}]};
+  assert.equal(build(s,old).holdings[1].nameZh,"合成美元基金");
+  delete old.historySnapshot;assert.equal(build(s,old).holdings[1].nameZh,"USD");
+ }
+});
+test("first asset freeze records unreviewed history without asserting missing history",()=>{
+ const old=oldData();old.historyStatus={state:"verified",coverage:{transactions:"complete"},evidence:"synthetic-review"};
+ const before=copy(old),data=build(snapshot(),old);
+ assert.equal(data.historyStatus.state,"preserved");assert.equal(data.historyStatus.reason,"history_not_revalidated");
+ assert.deepEqual(data.historyStatus.coverage,old.historyStatus.coverage);assert.equal(data.historyStatus.evidence,"synthetic-review");
+ assert.deepEqual(old,before);
+});
+test("asset refresh retains existing history reasons and coverage evidence",()=>{
+ for(const reason of ["incomplete_history","history_not_revalidated"]){
+  const first=build();first.historyStatus={...first.historyStatus,reason,coverage:{transactions:"partial",income:"unknown"},evidence:"synthetic-review"};
+  const before=copy(first),next=build(snapshot(),first);
+  assert.deepEqual(next.historyStatus,first.historyStatus);assert.deepEqual(next.historySnapshot,first.historySnapshot);
+  assert.deepEqual(first,before);
+ }
+});
+test("first asset freeze cannot upgrade an explicitly incomplete history status",()=>{
+ const old=oldData();old.historyStatus={state:"incomplete",reason:"incomplete_history",coverage:{transactions:"partial"}};
+ const before=copy(old),data=build(snapshot(),old),ui=U.browserContract(html);
+ assert.deepEqual(data.historyStatus,{...old.historyStatus,state:"preserved",asOf:old.asOf});
+ assert.deepEqual(old,before);
+ ui.state.raw=data;ui.state.data=ui.normalizeData(data);
+ assert.equal(ui.computeAnnualSummary().annualUnavailable,true);
+});
 test("unknown balance date remains null and is distinct from retrieval",()=>{
  const data=build();assert.deepEqual(data.assetSnapshot,{retrievedAt:"2026-10-18T02:00:00Z",sourceAsOf:null,sourceDateStatus:"unknown"});
  assert.ok(data.assetAudit.accountSourceDates.every(a=>a.balanceSourceAsOf===null));

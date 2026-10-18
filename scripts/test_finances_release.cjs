@@ -173,10 +173,27 @@ test("independent manifest requires exact file set and exact actual hashes", asy
 });
 test("path whitelist accepts reviewed native sources and refuses unsupported or secret files", async () => {
   for (const filename of ["scripts/native/a.c", "scripts/native/a.m", "scripts/native/a.cjs", "scripts/native/a.py", "scripts/native/a.swift", "scripts/run.cjs", "docs/update.md", ".gitignore", "index.html", "README.md"]) assert.equal(release.validPath(filename), true);
-  for (const filename of ["index.preview.html", "index.private.html", "scripts/native/a", "scripts/native/a.o", "scripts/native/a.dylib", "scripts/private_key.py", "docs/secrets.md", "scripts/credentials.cjs", ".github/workflows/a.yml", "scripts/../a.py", "scripts//a.py", "/scripts/a.py", "scripts/native/sub/a.py", "data.json", "password.pem", ".env", "docs/deep/a.md"]) {
+  for (const filename of ["index.private.html", "scripts/native/a", "scripts/native/a.o", "scripts/native/a.dylib", "scripts/private_key.py", "docs/secrets.md", "scripts/credentials.cjs", ".github/workflows/a.yml", "scripts/../a.py", "scripts//a.py", "/scripts/a.py", "scripts/native/sub/a.py", "data.json", "password.pem", ".env", "docs/deep/a.md"]) {
     assert.equal(release.validPath(filename), false, filename);
     const f = fixture(); const files = [{ path: filename, content: "synthetic", sha256: hash("synthetic") }];
     assert.equal((await f.run({ files, expectedSourceHashes: { [filename]: hash("synthetic") }, publish: true })).status, "blocked"); assert.equal(f.calls.length, 0);
+  }
+});
+test("exact reviewed preview path supports dry-run and idempotent mock publication", async () => {
+  assert.equal(release.validPath("index.preview.html"), true);
+  const content = "<!doctype html><html>synthetic preview</html>\n";
+  const f = fixture({ files: [{ path: "index.preview.html", content, sha256: hash(content) }] });
+  assert.equal((await f.run()).status, "dry_run"); assert.equal(f.mutations().length, 0); assert.equal(f.saves.length, 0);
+  assert.equal((await f.run({ publish: true })).status, "published");
+  assert.deepEqual(f.mutations().find(call => call.method === "createTree").args.tree_elements.map(row => row.path), ["index.preview.html"]);
+  const count = f.mutations().length;
+  assert.equal((await f.run({ publish: true })).status, "published"); assert.equal(f.mutations().length, count);
+});
+test("preview allowlist rejects every similar or nested path before IO", async () => {
+  for (const filename of ["index.preview.htm", "index.preview.HTML", "Index.preview.html", "index.preview2.html", "index.preview.html.bak", "index.preview.html/child", "index.preview.html?x=1", "./index.preview.html", "/index.preview.html", "docs/index.preview.html", "scripts/index.preview.html", "preview/index.html", "index%2Epreview.html"]) {
+    assert.equal(release.validPath(filename), false, filename);
+    const content = "synthetic preview", files = [{ path: filename, content, sha256: hash(content) }], f = fixture({ files });
+    assert.equal((await f.run({ publish: true })).status, "blocked"); assert.equal(f.calls.length, 0); assert.equal(f.saves.length, 0);
   }
 });
 test("canonical v1 envelope rejects plaintext, duplicate keys and altered parameters", async () => {

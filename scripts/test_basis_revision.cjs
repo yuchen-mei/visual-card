@@ -62,7 +62,9 @@ test("replacement creates no cash, settlement, trades or dated income",()=>{
   assert.deepEqual(data.basisRevision.supersededHistoryReview,old.historyReview);
 });
 test("browser shows corrected cash interest with no source and no annual allocation",()=>{
-  const data=build(),ui=U.browserContract(html);
+  const old=oldData();
+  old.historyStatus={state:"preserved",asOf:old.asOf,reason:"incomplete_history"};
+  const data=build(revision(),old),ui=U.browserContract(html);
   ui.state.raw=data;ui.state.data=ui.normalizeData(data);
   assert.equal(ui.state.data.performance.totalGain,93);
   assert.equal(ui.state.data.performance.items.find(i=>i.kind==="cash_interest").gain,23);

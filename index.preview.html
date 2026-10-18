@@ -1515,7 +1515,7 @@
             <div class="metric-card">
               <div class="metric-label">当前展示资产</div>
               <div id="totalCurrent" class="metric-value"></div>
-              <div class="metric-sub">美国银行 CD + 股票 / ETF</div>
+              <div class="metric-sub">现金 + 股票 / ETF</div>
             </div>
           </div>
 
@@ -1996,7 +1996,7 @@
     }
 
     function normalizeData(data) {
-      const holdings = [...data.holdings]
+      const holdings = normalizeCashHoldings(data.holdings)
         .filter((item) => Number(item.value) > 0)
         .sort((a, b) => b.value - a.value);
 
@@ -2018,22 +2018,79 @@
       };
     }
 
+    function isCashHolding(item) {
+      const type = String(item.type || "").toLowerCase();
+      const ticker = String(item.ticker || "").toUpperCase();
+      return /现金|存款|储蓄|cash|checking|saving|sweep/.test(type)
+        || type === "cd" || ticker === "CD" || ticker === "CASH";
+    }
+
+    // 账户间划转不改变资产；现金只按已有余额合并，不另加累计利息。
+    function normalizeCashHoldings(holdings) {
+      const items = [];
+      let cash = null;
+      for (const item of holdings || []) {
+        if (!isCashHolding(item)) {
+          items.push({ ...item });
+          continue;
+        }
+        if (!cash) {
+          cash = { ticker: "CASH", nameZh: "现金", type: "cash", value: 0 };
+          items.push(cash);
+        }
+        cash.value += Number(item.value) || 0;
+      }
+      return items;
+    }
+
+    function isCashInterestItem(item) {
+      if (item.kind) return item.kind === "cash_interest";
+      const label = String(item.label || "").toLowerCase();
+      // 混合收益没有可靠拆分依据，不能把股票已实现收益算成利息。
+      if (/止盈|已实现|realized|股息|dividend|股票|etf|债券|bond|margin|贷款|借贷/.test(label)) return false;
+      return /利息|interest|sweep|\bcd\b|定期存款/.test(label);
+    }
+
+    function normalizeCashInterestItems(items) {
+      const result = [];
+      let cashInterest = null;
+      for (const source of items) {
+        const item = normalizePerformanceItem(source);
+        if (item.label === "利息及已止盈收益") {
+          result.push({ ...item, label: "其他收益", kind: "other_income", gainOnly: true, returnPct: null });
+        } else if (isCashInterestItem(item)) {
+          if (!cashInterest) {
+            cashInterest = {
+              label: "现金利息", kind: "cash_interest", gainOnly: true,
+              principal: 0, currentValue: 0, gain: 0, returnPct: null
+            };
+            result.push(cashInterest);
+          }
+          cashInterest.gain += item.gain;
+        } else {
+          result.push(item);
+        }
+      }
+      return result;
+    }
+
     function normalizePerformanceData(performance, holdings) {
       const perf = { ...(performance || {}) };
       const items = Array.isArray(perf.items)
-        ? perf.items.map((item) => normalizePerformanceItem(item))
+        ? normalizeCashInterestItems(perf.items)
         : [];
       const totalGain = numericOrNull(perf.totalGain);
 
       if (
         totalGain === null ||
         !items.length ||
-        items.some((item) => item.label === "利息及已止盈收益")
+        items.some((item) => item.kind === "other_income")
       ) {
         return { ...perf, items };
       }
 
-      const stockIndex = items.findIndex(isStockEtfPerformanceItem);
+      const stockIndex = items.findIndex((item) => isStockEtfPerformanceItem(item)
+        && item.kind !== "realized_gain" && !/已实现|止盈|\brealized\b/i.test(item.label));
       const stockSummary = summarizeTradableHoldingPerformance(holdings);
       if (stockIndex < 0 || !stockSummary.complete) {
         return { ...perf, items };
@@ -2058,12 +2115,13 @@
         returnPct: calculateReturnPct(stockSummary.gain, stockSummary.principal)
       };
       nextItems.splice(stockIndex + 1, 0, {
-        label: "利息及已止盈收益",
-        principal: stockSummary.principal,
-        currentValue: stockSummary.principal + residualGain,
+        label: "其他收益",
+        kind: "other_income",
+        gainOnly: true,
+        principal: 0,
+        currentValue: 0,
         gain: residualGain,
-        returnPct: calculateReturnPct(residualGain, stockSummary.principal),
-        sharedPrincipal: true
+        returnPct: null
       });
 
       return { ...perf, items: nextItems };
@@ -2075,7 +2133,7 @@
         principal: Number(item.principal || 0),
         currentValue: Number(item.currentValue || 0),
         gain: Number(item.gain || 0),
-        returnPct: numericOrNull(item.returnPct)
+        returnPct: item.gainOnly || item.returnPct == null ? null : numericOrNull(item.returnPct)
       };
     }
 
@@ -2117,9 +2175,8 @@
     }
 
     function isTradableHolding(item) {
-      const type = String(item.type || "").toLowerCase();
       const ticker = String(item.ticker || "").toUpperCase();
-      return ticker && ticker !== "CD" && !type.includes("现金") && !type.includes("cash") && !type.includes("cd");
+      return Boolean(ticker) && !isCashHolding(item);
     }
 
     function stableHash(text) {
@@ -2377,9 +2434,7 @@
 
     function performanceCenterLabel(item) {
       const label = String(item.label || "");
-      if (label === "利息及已止盈收益") return "利息/止盈";
       if (isStockEtfPerformanceItem(item)) return "股票/ETF";
-      if (label.toLowerCase().includes("cd")) return "CD";
       return centerLabel(label, 8);
     }
 
@@ -2567,6 +2622,7 @@
     }
 
     function formatPerformanceCurrent(item) {
+      if (item.gainOnly) return "";
       const pct = formatPerformanceReturn(item);
       if (item.sharedPrincipal) return pct ? `收益率 ${pct}` : "收益率 –";
       return pct ? `当前 ${formatCurrency(item.currentValue)} · ${pct}` : `当前 ${formatCurrency(item.currentValue)}`;
@@ -2578,8 +2634,7 @@
         equity: "股票",
         stock: "股票",
         etf: "ETF",
-        cash: "现金",
-        cd: "CD"
+        cash: "现金"
       };
       return labels[value] || type || "持仓";
     }
@@ -2621,12 +2676,15 @@
       const shown = shownPerformance();
       list.innerHTML = "";
 
+      const totalGainMagnitude = items.reduce((sum, item) => sum + Math.abs(item.gain), 0);
+
       items.forEach((item, index) => {
         const row = document.createElement("div");
         row.className = `perf-row ${index === shown ? "active" : ""}`.trim();
         row.dataset.index = String(index);
         row.tabIndex = 0;
-        const gainShare = item.currentValue ? Math.abs(item.gain) / Math.abs(item.currentValue) * 100 : 0;
+        const basis = item.gainOnly ? totalGainMagnitude : Math.abs(item.currentValue);
+        const gainShare = basis ? Math.abs(item.gain) / basis * 100 : 0;
         const pct = item.gain === 0 ? 0 : Math.max(4, Math.min(100, gainShare));
         row.innerHTML = `
           <div class="perf-row-top">
@@ -2634,7 +2692,7 @@
             <div class="gain ${item.gain < 0 ? "negative" : ""}">${formatSignedCurrency(item.gain)}</div>
           </div>
           <div class="perf-row-bottom">
-            <span>${item.sharedPrincipal ? "共享本金" : "本金"} ${formatCurrency(item.principal)}</span>
+            <span>${item.gainOnly ? "累计收益" : `${item.sharedPrincipal ? "共享本金" : "本金"} ${formatCurrency(item.principal)}`}</span>
             <span>${formatPerformanceCurrent(item)}</span>
           </div>
           <div class="bar-track"><div class="bar-fill ${item.gain < 0 ? "negative" : ""}" style="width:${pct}%"></div></div>
@@ -3195,7 +3253,7 @@
     // 年度收益（股票 / ETF）= 年末市值 − 年初市值 − 当年净投入（买入金额 − 卖出金额），
     // 卖出实现的盈亏因此自动计入当年。市值 = 交易记录累计股数 × 当日收盘价。
     // 收益率用 Modified Dietz：按资金在年内停留的时间加权，年中追加的资金不会稀释收益率。
-    // CD 利息和股息只在数据提供带日期的 income 记录时计入，不参与收益率计算。
+    // 现金利息和股息只在数据提供带日期的 income 记录时计入，不参与收益率计算。
     const DAY_MS = 86400000;
 
     function dayTime(date) {
@@ -3392,7 +3450,7 @@
               <div class="annual-year-label">${entry.year} ${entry.current ? "年初至今" : "全年"}</div>
               <div class="annual-year-value gain ${entry.pnl < 0 ? "negative" : ""}">${formatSignedCurrency(entry.pnl)}</div>
               <div class="annual-year-sub">收益率 ${entry.returnPct === null ? "–" : formatSignedPct(entry.returnPct)} · ${netFlow >= 0 ? "净投入" : "净取出"} ${formatCurrency(Math.abs(netFlow))}</div>
-              <div class="annual-year-sub">${valueLine}${summary.incomeCount ? ` · 含利息 / 股息 ${formatSignedCurrency(entry.income)}` : ""}</div>
+              <div class="annual-year-sub">${valueLine}${summary.incomeCount ? ` · 含现金利息 / 股息 ${formatSignedCurrency(entry.income)}` : ""}</div>
             `;
             yearsEl.appendChild(tile);
           });
@@ -3409,15 +3467,15 @@
             let foot = `<tr><td>股票 / ETF 合计</td>${stockTotals.map(cell).join("")}${cell(stockTotals.reduce((sum, value) => sum + value, 0))}</tr>`;
             if (summary.incomeCount) {
               const incomes = summary.years.map((entry) => entry.income);
-              foot += `<tr><td>利息 / 股息</td>${incomes.map(cell).join("")}${cell(incomes.reduce((sum, value) => sum + value, 0))}</tr>`;
+              foot += `<tr><td>现金利息 / 股息</td>${incomes.map(cell).join("")}${cell(incomes.reduce((sum, value) => sum + value, 0))}</tr>`;
             }
             tableEl.innerHTML = `<table class="annual-table"><thead><tr><th>股票</th>${head}<th>合计</th></tr></thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table>`;
           }
 
           notes.push("<div>收益 = 年末市值 − 年初市值 − 当年净投入，已含卖出实现的盈亏；收益率按资金在年内停留的时间加权（Modified Dietz），只统计股票 / ETF。</div>");
           notes.push(summary.incomeCount
-            ? `<div>已计入 ${summary.incomeCount} 条利息 / 股息记录。</div>`
-            : "<div>未包含 CD 利息和股息：当前数据只有累计值，没有按日期的记录。</div>");
+            ? `<div>已计入 ${summary.incomeCount} 条现金利息 / 股息记录。</div>`
+            : "<div>现金利息和股息按实际入账日期计入年度收益。</div>");
         }
 
         notesEl.innerHTML = notes.join("");
@@ -3432,6 +3490,7 @@
     function renderRanking() {
       const list = $("rankList");
       const ranked = [...state.data.holdings]
+        .filter(isTradableHolding)
         .map((item) => {
           const gain = holdingGain(item);
           const returnPct = gain === null ? null : holdingReturnPct(item, gain);
@@ -3479,7 +3538,7 @@
       const largest = holdings[0];
       const perf = data.performance;
 
-      $("meta").textContent = `${data.asOf || "latest"} · ${data.currency || "USD"} · CD + 股票 / ETF`;
+      $("meta").textContent = `${data.asOf || "latest"} · ${data.currency || "USD"} · 现金 + 股票 / ETF`;
       $("largestHolding").textContent = `${largest.ticker} ${formatPct(largest.weight)}`;
       $("holdingCount").textContent = `${holdings.length} 个`;
 

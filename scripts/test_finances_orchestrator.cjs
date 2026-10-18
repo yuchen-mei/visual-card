@@ -125,3 +125,44 @@ test("publisher uncertainty notifies and is not misreported as success",async()=
 test("unexpected request keys fail before reading any external data",async()=>{
  const f=fixture();f.request.mode="basis-revision";f.deps.publisher.readBaseline=async()=>{throw Error("must not read");};const r=await f.run();assert.equal(r.status,"failed");assert.equal(r.code,"E_REQUEST");assert.equal(r.phase,"preflight");
 });
+function positionFixture(){
+ const f=fixture(),M=require("./finances_market.cjs");
+ f.linked.institutions[0].accounts.splice(1,1);
+ f.request.accountHashes=f.linked.institutions[0].accounts.map(a=>hash(a.account_id));
+ f.responses.splice(4,2);f.responses.splice(1,1);
+ f.request.publish=true;f.deps.positionAccountHashes=[hash("synthetic-a")];
+ const ranges={DEMO:"2025-01-02",QQQ:"2025-01-02",SPY:"2025-01-02"};
+ const market={asOf:"2026-10-16",source:"yahoo-chart",generatedAt:"2026-10-17T00:00:00Z",prices:Object.fromEntries(Object.keys(ranges).map(t=>[t,[{date:"2025-01-02",close:10},{date:"2026-10-16",close:11}]]))};
+ const files=[["scripts/market_price_ranges.json",ranges],["market.prices.json",market]].map(([path,value])=>{const content=JSON.stringify(value,null,2)+"\n";return{path,content,sha256:hash(content)};});
+ f.prepared.positionEvents=[{id:"d".repeat(64),kind:"opened",ticker:"NEW",date:"2026-10-16",firstKnownBuyDate:"2026-10-16"}];
+ f.calls.releases=[];f.calls.market=[];
+ f.deps.market={...M,readMarketBaseline:async head=>{assert.equal(head,f.baseline.head);return{head,ranges,market,files};}};
+ f.deps.local.prepareMarket=async input=>{f.calls.market.push(copy(input));return{status:"validated",rangesContent:JSON.stringify(input.ranges,null,2)+"\n",marketContent:JSON.stringify({...market,prices:{...market.prices,NEW:[{date:"2026-10-16",close:12}]}},null,2)+"\n"};};
+ f.deps.release={publishRelease:async request=>{f.calls.releases.push(copy(request));return{status:request.publish?"published":"dry_run"};}};
+ return f;
+}
+test("position open publishes data and only changed public files atomically then exposes one stable event",async()=>{
+ const f=positionFixture(),r=await f.run();assert.equal(r.status,"published");assert.equal(r.notify,true);assert.equal(r.eventsReady,true);assert.deepEqual(r.positionEvents,f.prepared.positionEvents);
+ assert.equal(f.calls.published.length,0);assert.equal(f.calls.releases.length,1);
+ assert.deepEqual(f.calls.releases[0].files.map(x=>x.path),["data.enc.json","scripts/market_price_ranges.json","market.prices.json"]);
+ assert.equal(f.calls.releases[0].expectedHead,f.baseline.head);assert.deepEqual(f.calls.prepared[0].policy.positionAccountIds,["synthetic-a"]);
+ assert.doesNotMatch(JSON.stringify(r),/synthetic-a|shares|amountCents|accountId/);
+});
+test("silent lifecycle bootstrap and no-op do not prepare market or announce current holdings",async()=>{
+ for(const status of ["validated","unchanged"]){const f=positionFixture();f.prepared.positionEvents=[];f.prepared.status=status;
+ const r=await f.run();assert.equal(r.notify,false);assert.equal(r.positionEvents,undefined);assert.equal(f.calls.market.length,0);assert.equal(f.calls.releases.length,0);}
+});
+test("dry-run event is explicitly not ready for notification",async()=>{
+ const f=positionFixture();f.request.publish=false;const r=await f.run();assert.equal(r.status,"dry_run");assert.equal(r.notify,false);assert.equal(r.eventsReady,false);assert.equal(f.calls.releases[0].publish,false);
+});
+test("market fetch failure and history loss preserve all remote files and send no position event",async()=>{
+ for(const bad of [async()=>{throw Error("private-network-text");},async request=>({status:"validated",rangesContent:JSON.stringify(request.ranges),marketContent:JSON.stringify({asOf:"2026-10-16",source:"yahoo-chart",generatedAt:"2026-10-17T00:00:00Z",prices:{NEW:[{date:"2026-10-16",close:10}]}})})]){
+ const f=positionFixture();f.deps.local.prepareMarket=bad;const r=await f.run();assert.equal(r.status,"failed");assert.equal(r.phase,"market_preparation");assert.equal(r.productionPreserved,true);assert.equal(r.positionEvents,undefined);assert.equal(f.calls.published.length+f.calls.releases.length,0);assert.doesNotMatch(JSON.stringify(r),/private-network-text/);
+ }
+});
+test("concurrent atomic publication failure cannot announce a successful position change",async()=>{
+ const f=positionFixture();f.deps.release.publishRelease=async()=>({status:"conflict",code:"E_HEAD_CHANGED"});const r=await f.run();assert.equal(r.status,"conflict");assert.equal(r.eventsReady,undefined);assert.equal(r.positionEvents,undefined);assert.equal(f.calls.published.length,0);
+});
+test("protected benchmark event updates encrypted ledger without changing its public configuration",async()=>{
+ const f=positionFixture();f.prepared.positionEvents[0]={...f.prepared.positionEvents[0],ticker:"SPY",kind:"closed"};const r=await f.run();assert.equal(r.status,"published");assert.equal(r.eventsReady,true);assert.equal(f.calls.market.length,0);assert.equal(f.calls.releases.length,0);assert.equal(f.calls.published.length,1);
+});

@@ -11,6 +11,19 @@ const HEAD = oid("synthetic base head"), OTHER = oid("synthetic raced head");
 function envelope(seed = 1) {
   return `${JSON.stringify({ version: 1, kdf: "PBKDF2-SHA256", iterations: 250000, cipher: "AES-GCM", salt: Buffer.alloc(16, seed).toString("base64"), iv: Buffer.alloc(12, seed).toString("base64"), ciphertext: Buffer.alloc(32, seed).toString("base64") }, null, 2)}\n`;
 }
+function marketFixture() {
+  return {asOf: "2026-01-05", source: "yahoo-chart", generatedAt: "2026-01-06T01:00:00Z",
+    prices: {DEMO: [{date: "2026-01-05", close: 10}], ARCHIVE: [{date: "2025-12-31", close: 8.5}]}};
+}
+function publicFile(filename, value) {
+  const content = typeof value === "string" ? value : JSON.stringify(value, null, 2) + "\n";
+  return {path: filename, content, sha256: hash(content)};
+}
+function eventFiles() {
+  return [publicFile("data.enc.json", envelope(2)),
+    publicFile("scripts/market_price_ranges.json", {DEMO: "2026-01-05"}),
+    publicFile("market.prices.json", marketFixture())];
+}
 function fixture(options = {}) {
   const blobs = new Map(), trees = new Map(), commits = new Map(), records = new Map(), calls = [], saves = [];
   let remoteHead = options.advanced ? OTHER : HEAD, locked = false, failedRead = false, createCount = 0;
@@ -22,6 +35,8 @@ function fixture(options = {}) {
     ["scripts/old.cjs", { mode: "100644", type: "blob", sha: makeBlob("// unchanged source\n") }],
     ["assets/picture.bin", { mode: "100644", type: "blob", sha: oid("unchanged opaque binary") }]
   ]);
+  if (options.executable) baseFiles.set("scripts/fetch_market_prices.py", {mode:"100755",type:"blob",sha:makeBlob("# synthetic existing executable\n")});
+  if (options.indexMode) baseFiles.set("index.html", {...baseFiles.get("index.html"),mode:options.indexMode,type:options.indexMode === "160000" ? "commit" : "blob"});
   function buildTree(files) {
     const root = new Map();
     for (const [file, entry] of files) {
@@ -94,7 +109,8 @@ function fixture(options = {}) {
       calls.push({ method: "createTree", args: clone(args) }); intent("tree");
       assert.equal(args.repository_full_name, release.REPOSITORY); assert.equal(args.base_tree_sha, baseTree);
       const changed = new Map(baseFiles);
-      for (const row of args.tree_elements) { assert.equal(row.mode, "100644"); assert.equal(row.type, "blob"); changed.set(row.path, { mode: row.mode, type: row.type, sha: row.sha }); }
+      for (const row of args.tree_elements) { assert.equal(row.mode, baseFiles.get(row.path)?.mode || "100644"); assert.equal(row.type, "blob"); changed.set(row.path, { mode: row.mode, type: row.type, sha: row.sha }); }
+      if (options.modeTamper) changed.set(options.modeTamper.path, {...changed.get(options.modeTamper.path),mode:options.modeTamper.mode});
       if (options.extraFile) changed.set("private.json", { mode: "100644", type: "blob", sha: makeBlob("synthetic unexpected file") });
       if (options.changedSibling) changed.set("scripts/old.cjs", { mode: "100644", type: "blob", sha: makeBlob("synthetic unwanted change") });
       if (options.deletedSibling) changed.delete("assets/picture.bin");
@@ -154,6 +170,72 @@ test("publish checks exact UTF8 and creates only changed reviewed files and a CA
   assert.deepEqual(tree.args.tree_elements.map(row => row.path), f.request.files.map(row => row.path).filter(path => path !== "README.md").sort());
   assert.equal(f.records.get(f.request.operationId).phase, "published");
   assert.equal(f.saves.filter(record => record.intent).length, 8);
+});
+test("portfolio event publishes ciphertext and both public JSON files in one atomic ref update", async () => {
+  const f = fixture({files: eventFiles()});
+  const answer = await f.run({publish: true});
+  assert.equal(answer.status, "published"); assert.equal(f.getHead(), answer.commit);
+  assert.deepEqual(f.mutations().map(call => call.method), ["createBlob", "createBlob", "createBlob", "createTree", "createCommit", "updateRef"]);
+  const tree = f.mutations().find(call => call.method === "createTree");
+  assert.deepEqual(tree.args.tree_elements.map(row => row.path), ["data.enc.json", "market.prices.json", "scripts/market_price_ranges.json"]);
+  assert.deepEqual(f.records.get(f.request.operationId).manifest.map(row => row.path), tree.args.tree_elements.map(row => row.path));
+  const count = f.mutations().length;
+  assert.equal((await f.run({publish: true})).status, "published"); assert.equal(f.mutations().length, count);
+});
+test("public JSON paths are exact and do not authorize other JSON files", async () => {
+  for (const filename of ["scripts/market_price_ranges.json", "market.prices.json"]) assert.equal(release.validPath(filename), true);
+  for (const filename of ["market.json", "market.prices.private.json", "scripts/market.prices.json", "market_price_ranges.json", "scripts/market_price_ranges.json.bak", "scripts/other.json"]) {
+    assert.equal(release.validPath(filename), false);
+    const f = fixture({files: [publicFile(filename, {})]});
+    assert.equal((await f.run({publish: true})).status, "blocked"); assert.equal(f.calls.length, 0);
+  }
+});
+test("range JSON rejects private fields, empty dictionaries and invalid tickers or dates before IO", async () => {
+  for (const value of [{}, [], null, {CASH: "2026-01-05"}, {demo: "2026-01-05"}, {DEMO: "2026-02-30"}, {DEMO: {start: "2026-01-05"}}, {DEMO: "2026-01-05", account_id: "synthetic-private-marker"}, '{"DEMO":"synthetic-private-marker","DEMO":"2026-01-05"}']) {
+    const f = fixture({files: [publicFile("scripts/market_price_ranges.json", value)]});
+    const result = await f.run({publish: true});
+    assert.equal(result.code, "E_PUBLIC_JSON"); assert.equal(f.calls.length, 0); assert.equal(f.saves.length, 0);
+  }
+});
+test("market JSON rejects extra fields, malformed metadata and unsafe price rows before IO", async () => {
+  const mutations = [
+    value => { value.account_id = "synthetic-private-marker"; },
+    value => { value.source = "synthetic-private-marker"; },
+    value => { value.asOf = "2026-02-30"; },
+    value => { value.generatedAt = "synthetic-private-marker"; },
+    value => { value.generatedAt = "2026-02-30T01:00:00Z"; },
+    value => { value.prices = {}; },
+    value => { value.prices.CASH = value.prices.DEMO; },
+    value => { value.prices.demo = value.prices.DEMO; },
+    value => { value.prices.DEMO = []; },
+    value => { value.prices.DEMO[0].shares = 2; },
+    value => { value.prices.DEMO[0].date = "2026-02-30"; },
+    value => { value.prices.DEMO.push({...value.prices.DEMO[0]}); },
+    value => { value.prices.DEMO.push({date: "2026-01-04", close: 9}); },
+    ...[0, -1, true, "10", Infinity].map(close => value => { value.prices.DEMO[0].close = close; })
+  ];
+  for (const mutate of mutations) {
+    const value = marketFixture(); mutate(value);
+    const f = fixture({files: [publicFile("market.prices.json", value)]});
+    assert.equal((await f.run({publish: true})).code, "E_PUBLIC_JSON"); assert.equal(f.calls.length, 0); assert.equal(f.saves.length, 0);
+  }
+  for (const content of [JSON.stringify(marketFixture()).replace('"source":', '"source":"synthetic-private-marker","source":'), JSON.stringify(marketFixture()).replace('"close":10', '"close":1e999')]) {
+    const f = fixture({files: [publicFile("market.prices.json", content)]});
+    assert.equal((await f.run({publish: true})).code, "E_PUBLIC_JSON"); assert.equal(f.calls.length, 0);
+  }
+});
+test("concurrent main advancement cannot publish any part of a three-file event", async () => {
+  for (const option of ["advanced", "advanceAfterCommit", "casRace"]) {
+    const f = fixture({files: eventFiles(), [option]: true});
+    const answer = await f.run({publish: true});
+    assert.equal(answer.code, option === "casRace" ? "E_REF_NOT_CONFIRMED" : "E_HEAD_CHANGED");
+    assert.equal(f.getHead(), OTHER);
+    assert.equal(f.mutations().filter(call => call.method === "updateRef").length, option === "casRace" ? 1 : 0);
+    if (option === "casRace") {
+      const count = f.mutations().length;
+      assert.equal((await f.run({publish: true})).status, "recovery_required"); assert.equal(f.mutations().length, count);
+    }
+  }
 });
 test("REST base64 blobs retain Chinese and emoji UTF8 bytes", async () => {
   const f = fixture({ mcp: true }); assert.equal((await f.run({ publish: true })).status, "published");
@@ -286,6 +368,58 @@ test("new nested native source uses verified intermediate trees and unchanged si
 test("blob reads scale linearly with candidate manifest size", async () => {
   const f = fixture(); assert.equal((await f.run({ publish: true })).status, "published");
   const reads = f.calls.filter(call => call.args.url?.includes("/git/blobs/")).length; assert.ok(reads <= f.request.files.length * 4, `unexpected blob rereads: ${reads}`);
+});
+test("existing executable mode is inherited for changed content while new files remain nonexecutable", async () => {
+  const files = [publicFile("scripts/fetch_market_prices.py","# synthetic updated executable\n"),publicFile("scripts/new.py","# synthetic new file\n")];
+  const f = fixture({executable:true,files});
+  assert.equal((await f.run()).status,"dry_run"); assert.equal(f.mutations().length,0);
+  assert.equal((await f.run({publish:true})).status,"published");
+  const rows = f.mutations().find(call => call.method === "createTree").args.tree_elements;
+  assert.deepEqual(rows.map(({path,mode}) => ({path,mode})),[{path:"scripts/fetch_market_prices.py",mode:"100755"},{path:"scripts/new.py",mode:"100644"}]);
+  const count = f.mutations().length;
+  assert.equal((await f.run({publish:true})).status,"published"); assert.equal(f.mutations().length,count);
+});
+test("unchanged executable needs no object ref or journal writes", async () => {
+  const f = fixture({executable:true,files:[publicFile("scripts/fetch_market_prices.py","# synthetic existing executable\n")]});
+  assert.equal((await f.run({publish:true})).status,"unchanged");
+  assert.equal(f.mutations().length,0); assert.equal(f.saves.length,0);
+});
+test("target symlinks and submodules remain rejected before publication writes", async () => {
+  for (const indexMode of ["120000","160000"]) {
+    const f = fixture({indexMode});
+    assert.equal((await f.run({publish:true})).code,"E_FILE_MODE"); assert.equal(f.mutations().length,0); assert.equal(f.saves.length,0);
+  }
+});
+test("caller mode fields cannot change existing or new file permissions", async () => {
+  for (const filename of ["scripts/fetch_market_prices.py","scripts/new.py"]) {
+    const file = {...publicFile(filename,"# synthetic reviewed content\n"),mode:"100755"};
+    const f = fixture({executable:true,files:[file]});
+    assert.equal((await f.run({publish:true})).code,"E_FILE"); assert.equal(f.calls.length,0);
+  }
+});
+test("tree mode downgrades and upgrades fail before creating a commit", async () => {
+  for (const [filename,mode] of [["scripts/fetch_market_prices.py","100644"],["index.html","100755"],["scripts/new.py","100755"]]) {
+    const f = fixture({executable:true,files:[publicFile(filename,"# synthetic updated content\n")],modeTamper:{path:filename,mode}});
+    assert.equal((await f.run({publish:true})).code,"E_TREE_SCOPE");
+    assert.equal(f.mutations().some(call => call.method === "createCommit" || call.method === "updateRef"),false);
+  }
+});
+test("known executable blob receipt resumes with immutable baseline mode", async () => {
+  const f = fixture({executable:true,files:[publicFile("scripts/fetch_market_prices.py","# synthetic updated executable\n")],failAfterBlob:true});
+  assert.equal((await f.run({publish:true})).code,"E_READ");
+  assert.equal((await f.run({publish:true})).status,"published");
+  assert.equal(f.mutations().filter(call => call.method === "createBlob").length,1);
+  assert.equal(f.mutations().find(call => call.method === "createTree").args.tree_elements[0].mode,"100755");
+});
+test("executable ref recovery verifies inherited mode and rejects later receipt tampering", async () => {
+  const f = fixture({executable:true,files:[publicFile("scripts/fetch_market_prices.py","# synthetic updated executable\n")],unknownRefUnapplied:true});
+  assert.equal((await f.run({publish:true})).status,"recovery_required"); const count = f.mutations().length;
+  f.setHead(f.getCommit());
+  assert.equal((await release.reconcileRelease(f.request.operationId,f.deps)).status,"published"); assert.equal(f.mutations().length,count);
+  const root = f.trees.get(f.commits.get(f.getCommit()).tree.sha), scripts = root.find(row => row.path === "scripts");
+  f.trees.get(scripts.sha).find(row => row.path === "fetch_market_prices.py").mode = "100644";
+  const tampered = await release.reconcileRelease(f.request.operationId,f.deps);
+  assert.equal(tampered.status,"recovery_required"); assert.equal(tampered.code,"E_TREE_SCOPE"); assert.equal(f.mutations().length,count);
 });
 test("module embeds without Node globals or imports", async () => {
   const context = vm.createContext({}); vm.runInContext(fs.readFileSync(path.join(__dirname, "finances_release.cjs"), "utf8"), context);

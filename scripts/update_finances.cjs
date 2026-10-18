@@ -8,6 +8,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const vm = require("node:vm");
 const {applyTradeUpdates} = require("./finances_trades.cjs");
+const {applyPositionLifecycle} = require("./finances_positions.cjs");
 const ROOT = path.resolve(__dirname, "..");
 const DAY = 86400000;
 class ValidationError extends Error {}
@@ -367,15 +368,19 @@ function validateManualCapital(capital) {
 
 // This optional, encrypted policy is a user-approved display approximation.
 // It never creates income rows or treats a cash transfer as a new profit entry.
-function applyUserConfirmedReturnMethod(next, previous, snapshot, {html} = {}) {
-  const method = previous.userConfirmedReturnMethod;
-  if (method === undefined) return next;
+function applyUserConfirmedReturnMethod(next, previous, snapshot, {html, policy} = {}) {
+  const confirmation = policy?.supplementConfirmation;
+  if (previous.userConfirmedReturnMethod === undefined) {
+    requireThat(confirmation === undefined, "SUPPLEMENT_CONFIRMATION_METHOD_REQUIRED");
+    return next;
+  }
+  const method = clone(previous.userConfirmedReturnMethod);
   requireThat(method && method.version === 1 && method.method === "principal-minus-buying-power"
     && method.source === "user-confirmed" && method.classification === "user-approved-approximation"
     && method.incomeDatesInvented === false, "INVALID_CONFIRMED_RETURN_METHOD");
   validateManualCapital(previous.userConfirmedCapital);
   same(cents(method.totalPrincipalCents), previous.userConfirmedCapital.principalCents, "RETURN_METHOD_CAPITAL_MISMATCH");
-  const supplement = cents(method.buyingPowerSupplementCents);
+  let supplement = cents(method.buyingPowerSupplementCents);
   requireThat(supplement >= 0 && cents(method.providerCashCents) >= 0
     && ["not-reflected-in-provider-snapshot", "reflected-in-provider-snapshot"].includes(method.supplementState)
     && (method.supplementState !== "reflected-in-provider-snapshot" || supplement === 0), "INVALID_BUYING_POWER_SUPPLEMENT");
@@ -386,6 +391,61 @@ function applyUserConfirmedReturnMethod(next, previous, snapshot, {html} = {}) {
   const value = cents(sum(snapshot.positions.map(p => p.valueCents)));
   const cost = cents(sum(snapshot.positions.map(p => p.costBasisCents)));
   const ui = browserContract(html);
+  if (confirmation !== undefined) {
+    const review = "SUPPLEMENT_CONFIRMATION_REQUIRES_REVIEW";
+    requireThat(confirmation && typeof confirmation === "object" && !Array.isArray(confirmation), review);
+    same(Object.keys(confirmation).sort(), ["source", "sourceMessageId", "expectedPrincipalCents", "expectedProviderCashCents",
+      "expectedSupplementCents", "confirmedProviderCashCents", "newSupplementCents"].sort(), review);
+    requireThat(confirmation.source === "user-confirmed" && typeof confirmation.sourceMessageId === "string"
+      && confirmation.sourceMessageId.length > 0 && confirmation.sourceMessageId.length <= 200
+      && !/[\s\x00-\x1f\x7f]/.test(confirmation.sourceMessageId), review);
+    const expectedPrincipal = cents(confirmation.expectedPrincipalCents), expectedCash = cents(confirmation.expectedProviderCashCents);
+    const expectedSupplement = cents(confirmation.expectedSupplementCents), confirmedCash = cents(confirmation.confirmedProviderCashCents);
+    requireThat(expectedPrincipal > 0 && expectedCash >= 0 && expectedSupplement > 0
+      && cents(confirmation.newSupplementCents) === 0, review);
+    same(expectedPrincipal, method.totalPrincipalCents, review);
+    same(cents(expectedCash + expectedSupplement), confirmedCash, review);
+    same(confirmedCash, providerCash, review);
+    same(cents(method.effectiveBuyingPowerCents), confirmedCash, review);
+    const savedConfirmation = {...clone(confirmation), requestDigest: hash(canonical(confirmation))};
+    if (method.supplementConfirmation !== undefined) {
+      same(method.supplementConfirmation, savedConfirmation, review);
+      same(method.supplementState, "reflected-in-provider-snapshot", review);
+      same(supplement, 0, review); same(method.providerCashCents, confirmedCash, review);
+    } else {
+      same(method.supplementState, "not-reflected-in-provider-snapshot", review);
+      same(supplement, expectedSupplement, review); same(method.providerCashCents, expectedCash, review);
+    }
+    requireThat(snapshot.tradeUpdates?.version === 1 && snapshot.tradeUpdates.allPagesFetched === true
+      && snapshot.tradeUpdates.dateBasis === "provider-settlement-date" && Array.isArray(snapshot.tradeUpdates.rows)
+      && previous.tradeSync?.version === 1 && next.tradeSync?.version === 1
+      && previous.tradeSync.allPagesFetched === true && next.tradeSync.allPagesFetched === true
+      && Array.isArray(previous.tradeSync.transactions) && Array.isArray(next.tradeSync.transactions), review);
+    // applyTradeUpdates has revalidated every stable ID/digest against this
+    // complete source window. A confirmation cannot also accept trade changes.
+    same(next.tradeSync.transactions, previous.tradeSync.transactions, review);
+    same(cost, cents(method.holdingCostBasisCents), review);
+    const oldPositions = new Map(), currentPositions = new Map();
+    for (const h of previous.assetHoldings || previous.holdings || []) {
+      if (ui.isCashHolding(h)) continue;
+      requireThat(typeof h.ticker === "string" && Number.isFinite(h.shares) && h.shares > 0
+        && Number.isFinite(h.costBasis) && h.costBasis >= 0, review);
+      const key = h.ticker.trim().toUpperCase(), old = oldPositions.get(key) || {shares: 0, cost: 0};
+      oldPositions.set(key, {shares: old.shares + h.shares, cost: cents(old.cost + roundedCents(h.costBasis))});
+    }
+    for (const p of snapshot.positions) {
+      const old = currentPositions.get(p.ticker) || {shares: 0, cost: 0};
+      currentPositions.set(p.ticker, {shares: old.shares + p.shares, cost: cents(old.cost + p.costBasisCents)});
+    }
+    same([...oldPositions.keys()].sort(), [...currentPositions.keys()].sort(), review);
+    for (const [ticker, current] of currentPositions) {
+      const old = oldPositions.get(ticker); close(current.shares, old.shares, review); same(current.cost, old.cost, review);
+    }
+    same(next.trading, previous.trading, review);
+    method.buyingPowerSupplementCents = supplement = 0;
+    method.supplementState = "reflected-in-provider-snapshot";
+    method.supplementConfirmation = savedConfirmation;
+  }
   if (supplement > 0) {
     const review = "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW";
     const oldShares = new Map(), newShares = new Map();
@@ -587,7 +647,9 @@ function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy} 
   if(previous.userConfirmedCapital)validateManualCapital(previous.userConfirmedCapital);
   try { applyTradeUpdates(next, previous, snapshot); }
   catch (error) { throw new ValidationError(/^[A-Z][A-Z_0-9]{0,79}$/.test(error.code) ? error.code : "TRADE_UPDATE_INVALID"); }
-  applyUserConfirmedReturnMethod(next, previous, snapshot, {html});
+  try { applyPositionLifecycle(next, previous, snapshot, policy); }
+  catch (error) { throw new ValidationError(/^[A-Z][A-Z_0-9]{0,79}$/.test(error.code) ? error.code : "POSITION_UPDATE_INVALID"); }
+  applyUserConfirmedReturnMethod(next, previous, snapshot, {html, policy});
   // Verify through the actual production display path, with old history frozen.
   const ui=browserContract(html), normalized=ui.normalizeData(clone(next));
   same(roundedCents(normalized.totalAssetValue),total,"BROWSER_BALANCE_MISMATCH");

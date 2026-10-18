@@ -37,3 +37,23 @@ for(const [status,phase,expected]of [["unchanged",null,"completed"],["published"
  const result=await runtime.runScheduled({accountHashes:["a".repeat(64)],publish:true});
  assert.equal(sent.status,expected);assert.equal(sent.idempotencyKey,key);assert.equal(run.publish,true);assert.equal(run.operationId,"visual-card-daily-2026-10-18");assert.equal(result.notify,expected!=="completed");
 });
+test("scheduled success forwards confirmed position events to the notification caller",async()=>{
+ const key="visual-card:America/Los_Angeles:2026-10-18",event={id:"d".repeat(64),kind:"closed",ticker:"DEMO",date:"2026-10-16",firstKnownBuyDate:"2025-01-02"};
+ const tools={exec_command:async()=>({session_id:21,output:JSON.stringify({status:"run_requested",idempotencyKey:key,operationId:"visual-card-daily-2026-10-18",day:"2026-10-18",dueAt:"2026-10-19T03:00:00Z"})}),write_stdin:async()=>({exit_code:0,output:JSON.stringify({type:"final",status:"completed",notify:false})})};
+ const runtime=R.createRuntime({tools,config:{...config,scheduleStatePath:"/private/state/schedule.json",notBefore:"2026-01-01T00:00:00Z"},transport:T,source:{},publisher:{},orchestrator:{runIteration:async()=>({status:"published",notify:true,eventsReady:true,positionEvents:[event]})}});
+ const result=await runtime.runScheduled({accountHashes:["a".repeat(64)],publish:true});
+ assert.equal(result.notify,true);assert.equal(result.eventsReady,true);assert.deepEqual(result.positionEvents,[event]);
+});
+test("position feature requires one approved brokerage hash and both strict adapters",()=>{
+ for(const overrides of [{positionEventsEnabled:"true"},{positionEventsEnabled:true},{positionEventsEnabled:true,positionAccountHashes:["a".repeat(64),"b".repeat(64)]}])assert.throws(()=>R.createRuntime({tools:{},config:{...config,...overrides},transport:T,source:{},publisher:{},orchestrator:{}}),{code:"E_POSITION_CONFIG"});
+});
+test("public market adapter sends small ranges/date input bound to the local public baseline hash",async()=>{
+ const M=require('./finances_market.cjs'),market={asOf:'2026-10-16',source:'yahoo-chart',generatedAt:'2026-10-17T00:00:00Z',prices:{AAA:[{date:'2026-10-16',close:10}]}},existingContent=JSON.stringify(market),calls=[];
+ const request={ranges:{AAA:'2026-10-16'},existingContent,end:'2026-10-18'};
+ const tools={exec_command:async args=>{calls.push(args);return{session_id:22,output:JSON.stringify({status:'ready',protocol:1})};},write_stdin:async args=>{calls.push(args);return{exit_code:0,output:JSON.stringify({status:'validated',rangesContent:JSON.stringify(request.ranges),marketContent:existingContent})};}};
+ const runtime=R.createRuntime({tools,config,transport:T,source:{},publisher:{},orchestrator:{},market:M});
+ assert.equal((await runtime.prepareMarket(request)).status,'validated');
+ assert(calls[0].cmd.includes('--baseline-sha'));assert(calls[0].cmd.includes(T.hash(existingContent)));
+ assert.equal(calls[0].sandbox_permissions,'require_escalated');assert.doesNotMatch(calls[0].justification,/钥匙串/);
+ assert.deepEqual(JSON.parse(calls[1].chars),{ranges:request.ranges,end:request.end});assert.equal(calls.length,2);
+});

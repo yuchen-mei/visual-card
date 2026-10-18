@@ -24,7 +24,7 @@
   function validOperation(value) { return typeof value === "string" && OPERATION.test(value) && !value.includes("//"); }
   function validPath(value) {
     if (typeof value !== "string" || value.length > 240 || value.includes("..")) return false;
-    if ([".gitignore", "README.md", "index.html", "index.preview.html", "data.enc.json"].includes(value)) return true;
+    if ([".gitignore", "README.md", "index.html", "index.preview.html", "data.enc.json", "scripts/market_price_ranges.json", "market.prices.json"].includes(value)) return true;
     if (!/^(?:docs\/[A-Za-z0-9][A-Za-z0-9_.-]*\.md|scripts\/[A-Za-z0-9][A-Za-z0-9_.-]*\.(?:cjs|py)|scripts\/native\/[A-Za-z0-9][A-Za-z0-9_.-]*\.(?:swift|py|c|m|cjs))$/.test(value)) return false;
     return !value.split("/").some(part => /(?:^|[_.-])(?:secrets?|credentials?|private[_-]?key|id_rsa|id_ed25519|env)(?:[_.-]|$)/i.test(part));
   }
@@ -82,6 +82,49 @@
     for (const key of ["version", "kdf", "iterations", "cipher"]) need(a[key] === b[key], "E_ENVELOPE_PARAMETERS");
     for (const key of ["salt", "iv", "ciphertext"]) need(a[key] !== b[key], "E_ENVELOPE_RANDOMNESS");
   }
+  function validatePublicJSON(path, text) {
+    if (!["scripts/market_price_ranges.json", "market.prices.json"].includes(path)) return;
+    const code = "E_PUBLIC_JSON";
+    let value; try { value = JSON.parse(text); } catch { throw new ReleaseError(code); }
+    // JSON.parse discards duplicate keys. Reject them before accepting public
+    // bytes, so overwritten values cannot hide private fields in the document.
+    const stack = [];
+    const tokens = /"(?:\\.|[^"\\])*"|[{}\[\]]/g;
+    for (let token; (token = tokens.exec(text));) {
+      const part = token[0];
+      if (part === "{") stack.push(new Set());
+      else if (part === "[") stack.push(null);
+      else if (part === "}" || part === "]") stack.pop();
+      else if (/^\s*:/.test(text.slice(tokens.lastIndex))) {
+        const keys = stack[stack.length - 1], key = JSON.parse(part);
+        need(keys && !keys.has(key), code); keys.add(key);
+      }
+    }
+    const dictionary = item => item !== null && typeof item === "object" && !Array.isArray(item) && Object.keys(item).length > 0;
+    const ticker = item => typeof item === "string" && /^[A-Z][A-Z0-9.-]{0,14}$/.test(item) && item !== "CASH";
+    const date = item => {
+      if (typeof item !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(item)) return false;
+      const time = Date.parse(item + "T00:00:00Z");
+      return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === item;
+    };
+    if (path === "scripts/market_price_ranges.json") {
+      need(dictionary(value) && Object.entries(value).every(([name, start]) => ticker(name) && date(start)), code);
+      return;
+    }
+    need(exact(value, ["asOf", "source", "generatedAt", "prices"]) && date(value.asOf) && value.source === "yahoo-chart", code);
+    need(typeof value.generatedAt === "string" && /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,6})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.test(value.generatedAt)
+      && date(value.generatedAt.slice(0, 10)) && Number.isFinite(Date.parse(value.generatedAt)), code);
+    need(dictionary(value.prices), code);
+    for (const [name, rows] of Object.entries(value.prices)) {
+      need(ticker(name) && Array.isArray(rows) && rows.length > 0, code);
+      let previous = "";
+      for (const row of rows) {
+        need(exact(row, ["date", "close"]) && date(row.date) && row.date > previous
+          && typeof row.close === "number" && Number.isFinite(row.close) && row.close > 0, code);
+        previous = row.date;
+      }
+    }
+  }
   function unwrap(raw) {
     need(raw && raw.isError !== true, "E_TOOL_RESULT");
     let value = raw;
@@ -114,6 +157,7 @@
       need(validText(content, path === "data.enc.json" ? 24 * 1024 * 1024 : 2 * 1024 * 1024), "E_CONTENT");
       need(typeof sha256 === "string" && HASH.test(sha256) && expectedSourceHashes[path] === sha256, "E_MANIFEST_HASH");
       if (path === "data.enc.json") validateEnvelope(content, true);
+      validatePublicJSON(path, content);
       size += content.length; return Object.freeze({ path, content, sha256 });
     }));
     need(size <= 30 * 1024 * 1024 && files.length === Object.keys(expectedSourceHashes).length, "E_MANIFEST");
@@ -186,8 +230,8 @@
     for (const file of manifest) {
       const row = rows.find(item => item.path === file.path);
       if (row) {
-        need(row.type === "blob" && row.mode === "100644", "E_FILE_MODE");
-        const content = await blob(row.sha, deps); files.set(file.path, { sha: row.sha, hash: await digest(content, deps), content });
+        need(row.type === "blob" && ["100644", "100755"].includes(row.mode), "E_FILE_MODE");
+        const content = await blob(row.sha, deps); files.set(file.path, { sha: row.sha, mode: row.mode, hash: await digest(content, deps), content });
       }
       const parts = file.path.split("/"); parts.pop();
       while (parts.length) { const ancestor = rows.find(item => item.path === parts.join("/")); need(!ancestor || ancestor.type === "tree", "E_PATH_CONFLICT"); parts.pop(); }
@@ -201,7 +245,7 @@
     const changedPaths = new Set();
     for (const file of manifest) {
       if (leaves.get(file.path)?.sha !== file.blobSha) changedPaths.add(file.path);
-      leaves.set(file.path, { path: file.path, mode: "100644", type: "blob", sha: file.blobSha });
+      leaves.set(file.path, { path: file.path, mode: leaves.get(file.path)?.mode || "100644", type: "blob", sha: file.blobSha });
       const parts = file.path.split("/"); parts.pop();
       while (parts.length) { if (!directories.has(parts.join("/"))) directories.set(parts.join("/"), null); parts.pop(); }
     }
@@ -247,6 +291,7 @@
   }
   async function verifyBlobReceipt(file, base, deps) {
     const content = await blob(file.blobSha, deps); need(await digest(content, deps) === file.sha256, "E_CANDIDATE_CHANGED");
+    validatePublicJSON(file.path, content);
     if (file.path === "data.enc.json") {
       validateEnvelope(content, true);
       const old = base.files.get(file.path); if (old && old.hash !== file.sha256) envelopeChange(old.content, content);
@@ -303,7 +348,7 @@
     }
     if (!record.treeSha) {
       need(await head(deps) === record.expectedHead, "E_HEAD_CHANGED");
-      await mutate("tree", { repository_full_name: REPOSITORY, base_tree_sha: record.baseTreeSha, tree_elements: record.manifest.filter(file => changed.some(item => item.path === file.path)).map(file => ({ path: file.path, mode: "100644", type: "blob", sha: file.blobSha })) }, record, deps, context);
+      await mutate("tree", { repository_full_name: REPOSITORY, base_tree_sha: record.baseTreeSha, tree_elements: record.manifest.filter(file => changed.some(item => item.path === file.path)).map(file => ({ path: file.path, mode: base.files.get(file.path)?.mode || "100644", type: "blob", sha: file.blobSha })) }, record, deps, context);
       await verifyTreeReceipt(record, base, deps);
     }
     if (!record.commitSha) {

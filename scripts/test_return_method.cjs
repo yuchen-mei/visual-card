@@ -64,7 +64,7 @@ function snapshot() {
     reconciliation: {independentSourceTotals: true, totalValueCents: 170000, cashCents: 80000}
   };
 }
-const build = (s = snapshot(), old = previous()) => U.buildAssetPayload(s, old, {html, now, policy});
+const build = (s = snapshot(), old = previous(), privatePolicy = policy) => U.buildAssetPayload(s, old, {html, now, policy: privatePolicy});
 function changeCash(s, index, delta) {
   s.accounts[index].cashCents += delta;
   s.accounts[index].totalCents += delta;
@@ -278,6 +278,93 @@ test("explicit settled supplement state keeps the denominator continuous", () =>
   assert.deepEqual(after.userConfirmedCapital, before.userConfirmedCapital);
   changeCash(s, 0, 1000);
   assert.equal(build(s, after).performance.totalPrincipal, 740);
+});
+
+function supplementPolicy() {
+  return {...copy(policy), supplementConfirmation: {source: "user-confirmed", sourceMessageId: "synthetic-cash-confirmation",
+    expectedPrincipalCents: 100000, expectedProviderCashCents: 20000, expectedSupplementCents: 5000,
+    confirmedProviderCashCents: 25000, newSupplementCents: 0}};
+}
+test("explicit supplement confirmation preserves buying power, income and cumulative returns", () => {
+  const before = tradeBaseline(), oldCopy = copy(before), s = attachTrades(snapshot()), p = supplementPolicy(); changeCash(s, 0, 5000);
+  const sourceCopy = copy(s), policyCopy = copy(p), after = build(s, before, p), method = after.userConfirmedReturnMethod;
+  assert.equal(method.buyingPowerSupplementCents, 0); assert.equal(method.supplementState, "reflected-in-provider-snapshot");
+  assert.equal(method.providerCashCents, 25000);
+  assert.equal(method.effectiveBuyingPowerCents, before.userConfirmedReturnMethod.effectiveBuyingPowerCents);
+  assert.equal(method.investedPrincipalCents, before.userConfirmedReturnMethod.investedPrincipalCents);
+  assert.equal(method.sourceMessageId, before.userConfirmedReturnMethod.sourceMessageId);
+  assert.deepEqual(method.supplementConfirmation, {...p.supplementConfirmation, requestDigest: U.hash(U.canonical(p.supplementConfirmation))});
+  for (const key of ["performance", "userConfirmedCapital", "trading", "income", "historySnapshot"])
+    assert.deepEqual(after[key], before[key]);
+  assert.deepEqual(before, oldCopy); assert.deepEqual(s, sourceCopy); assert.deepEqual(p, policyCopy);
+  assert.deepEqual(build(s, after), after); // Ordinary daily use needs no further confirmation.
+  changeCash(s, 0, 1000);
+  assert.equal(build(s, after).performance.totalPrincipal, 740);
+});
+test("confirmation requires the exact explicit request and matching old and current cash", () => {
+  const before = tradeBaseline(), s = attachTrades(snapshot()); changeCash(s, 0, 5000);
+  assert.throws(() => build(s, before), {message: "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW"});
+  for (const change of [c => {c.expectedPrincipalCents++;}, c => {c.expectedProviderCashCents++;},
+    c => {c.expectedSupplementCents++;}, c => {c.confirmedProviderCashCents++;}, c => {c.newSupplementCents = 1;},
+    c => {c.source = "inferred";}, c => {c.effectiveDate = "2026-10-17";}, c => {c.sourceMessageId = "bad\nidentifier";}]) {
+    const p = supplementPolicy(); change(p.supplementConfirmation);
+    assert.throws(() => build(s, before, p), {message: "SUPPLEMENT_CONFIRMATION_REQUIRES_REVIEW"});
+  }
+  const wrongSource = copy(s); changeCash(wrongSource, 0, 1);
+  assert.throws(() => build(wrongSource, before, supplementPolicy()), {message: "SUPPLEMENT_CONFIRMATION_REQUIRES_REVIEW"});
+  const wrongEffective = copy(before); wrongEffective.userConfirmedReturnMethod.effectiveBuyingPowerCents++;
+  assert.throws(() => build(s, wrongEffective, supplementPolicy()), {message: "SUPPLEMENT_CONFIRMATION_REQUIRES_REVIEW"});
+});
+test("confirmation rejects new transactions and changed shares, identities or cost", () => {
+  const before = tradeBaseline(), s = attachTrades(snapshot()); changeCash(s, 0, 5000);
+  for (const change of [x => {x.positions[0].shares++;}, x => {x.positions[0].costBasisCents++;},
+    x => {x.positions[0].ticker = "OTHER";}, x => {x.tradeUpdates.rows = [
+      sourceTrade({sourceId: "synthetic-roundtrip-buy", shares: 1, amountCents: 9000}),
+      sourceTrade({sourceId: "synthetic-roundtrip-sell", side: "sell", shares: 1, amountCents: -9000})];}]) {
+    const changed = copy(s); change(changed);
+    assert.throws(() => build(changed, before, supplementPolicy()), {message: "SUPPLEMENT_CONFIRMATION_REQUIRES_REVIEW"});
+  }
+});
+test("confirmation encrypts once, roundtrips exactly and repeats without re-encryption", async () => {
+  const before = tradeBaseline(), s = attachTrades(snapshot()), p = supplementPolicy(); changeCash(s, 0, 5000);
+  const bytes = Buffer.from(JSON.stringify(U.encrypt(before, password))); s.previousCiphertextSha256 = U.hash(bytes);
+  const first = await U.prepareUpdate({snapshot: s, existingBytes: bytes, password, html, now, policy: p});
+  assert.equal(first.status, "changed");
+  const restored = U.decrypt(JSON.parse(first.bytes), password);
+  assert.deepEqual(restored, build(s, before, p));
+  s.previousCiphertextSha256 = U.hash(first.bytes);
+  for (const privatePolicy of [p, policy]) {
+    const retry = await U.prepareUpdate({snapshot: s, existingBytes: first.bytes, password, html, now, policy: privatePolicy,
+      encryptFn() { assert.fail("a repeated confirmation must not reencrypt"); }});
+    assert.equal(retry.status, "unchanged"); assert.equal(retry.bytes, undefined);
+  }
+  const conflicting = supplementPolicy(); conflicting.supplementConfirmation.sourceMessageId = "synthetic-other-confirmation";
+  assert.throws(() => build(s, restored, conflicting), {message: "SUPPLEMENT_CONFIRMATION_REQUIRES_REVIEW"});
+});
+test("confirmation requires this run's complete source trades and an existing verified trade sync", () => {
+  const before = tradeBaseline(), s = attachTrades(snapshot()); changeCash(s, 0, 5000);
+  const missingRows = copy(s); delete missingRows.tradeUpdates;
+  assert.throws(() => build(missingRows, before, supplementPolicy()), {message: "TRADES_SOURCE_REQUIRED"});
+  const missingBoth = copy(before); delete missingBoth.tradeSync;
+  assert.throws(() => build(missingRows, missingBoth, supplementPolicy()), {message: "SUPPLEMENT_CONFIRMATION_REQUIRES_REVIEW"});
+  assert.throws(() => build(s, missingBoth, supplementPolicy()), {message: "SUPPLEMENT_CONFIRMATION_REQUIRES_REVIEW"});
+  const truncated = copy(s); truncated.tradeUpdates.allPagesFetched = false;
+  assert.throws(() => build(truncated, before, supplementPolicy()), {message: "TRADES_INCOMPLETE_SOURCE"});
+  const next = copy(before); delete next.tradeSync;
+  assert.throws(() => U.applyUserConfirmedReturnMethod(next, before, s, {html, policy: supplementPolicy()}),
+    {message: "SUPPLEMENT_CONFIRMATION_REQUIRES_REVIEW"});
+});
+test("confirmation revalidates existing nonempty trade IDs without changing any saved orders", () => {
+  const s = tradeSnapshot(sourceTrade()), before = build(s, tradeBaseline()), p = supplementPolicy();
+  changeCash(s, 0, before.userConfirmedReturnMethod.buyingPowerSupplementCents);
+  p.supplementConfirmation.expectedProviderCashCents = before.userConfirmedReturnMethod.providerCashCents;
+  p.supplementConfirmation.confirmedProviderCashCents = before.userConfirmedReturnMethod.effectiveBuyingPowerCents;
+  const after = build(s, before, p);
+  assert.equal(before.tradeSync.transactions.length, 1);
+  assert.deepEqual(after.tradeSync, before.tradeSync); assert.deepEqual(after.trading, before.trading);
+  assert.deepEqual(after.performance, before.performance);
+  const changed = copy(s); changed.tradeUpdates.rows[0].price++;
+  assert.throws(() => build(changed, before, p), {message: "TRADES_SYNCED_SOURCE_CHANGED"});
 });
 
 test("asset returns preserve trading, income and original history without inventing annual income", () => {

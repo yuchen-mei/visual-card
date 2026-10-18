@@ -62,7 +62,17 @@ test("normalizes current assets with independent balances and excludes unapprove
   assert.equal(Object.hasOwn(result.coverage, "historyFromInception"), false);
   assert.equal(result.previousCiphertextSha256, input.baselineSha256);
   assert.equal(result.positions.find(p => p.ticker === "SYNTH").costBasisCents, 4500);
+  assert.equal(result.positions.find(p => p.ticker === "SYNTH").securityId, "synthetic-stock");
+  assert.equal(result.positions.find(p => p.ticker === "DEMO").securityId, "synthetic-etf");
   assert.equal(Object.hasOwn(result.positions.find(p => p.ticker === "DEMO"), "costBasisCents"), false);
+});
+
+test("holding security identity is preserved exactly and invalid identities fail", () => {
+  const input = fixture(), id = "x".repeat(200);
+  resultOf(input).items[1].security_id = id;
+  assert.equal(normalizeAssetSnapshot(input).positions.find(p => p.ticker === "SYNTH").securityId, id);
+  for (const invalid of [undefined, null, "", " ", 12, "x".repeat(201), "bad\nidentity"])
+    failure("SOURCE_INVALID_ID", value => { resultOf(value).items[1].security_id = invalid; });
 });
 
 test("USD cash is aggregated once while a genuine USD ETF remains a security", () => {

@@ -51,6 +51,12 @@
     requireThat(cursor===null,"E_PAGINATION_LIMIT");
    }
    const policy={accountIds:accounts.map(a=>a.account_id)};
+   if(deps.positionAccountHashes!==undefined){
+    const scope=copy(deps.positionAccountHashes),investment=accounts.filter(a=>a.type==="investment");
+    requireThat(Array.isArray(scope)&&scope.length===1&&scope.every(h=>/^[a-f0-9]{64}$/.test(h)),"E_POSITION_SCOPE");
+    requireThat(investment.length===1&&await deps.hash(investment[0].account_id)===scope[0],"E_POSITION_SCOPE");
+    policy.positionAccountIds=investment.map(a=>a.account_id);
+   }
    const snapshot=deps.source.normalizeAssetSnapshot({linkedAccounts:linked,holdingsResponses,fetchedAt:new Date(deps.now()).toISOString(),baselineSha256:baseline.sha256,policy});
    const transactionResponses=[];
    const investmentAccounts=accounts.filter(a=>a.type==="investment");
@@ -73,11 +79,46 @@
    phase="local_validation";
    const prepared=copy(await deps.local.prepare({operationId:request.operationId,baseline:copy(baseline),snapshot:copy(snapshot),policy:copy(policy)}));
    requireThat(prepared?.operationId===request.operationId&&prepared.expectedHead===baseline.head&&prepared.baselineSha256===baseline.sha256,"E_LOCAL_RECEIPT");
-   if(prepared.status==="unchanged")return {status:"unchanged",notify:false,operationId:request.operationId};
+   let events=[];
+   if(deps.positionAccountHashes!==undefined){
+    requireThat(typeof deps.market?.validateEvents==="function"&&typeof deps.release?.publishRelease==="function"&&Array.isArray(prepared.positionEvents),"E_POSITION_RECEIPT");
+    events=copy(deps.market.validateEvents(prepared.positionEvents));
+   }else requireThat(prepared.positionEvents===undefined,"E_POSITION_SCOPE");
+   if(prepared.status==="unchanged"){
+    requireThat(events.length===0,"E_POSITION_RECEIPT");
+    return {status:"unchanged",notify:false,operationId:request.operationId};
+   }
    requireThat(prepared.status==="validated"&&typeof prepared.content==="string"&&await deps.hash(prepared.content)===prepared.validatedSha256,"E_LOCAL_RECEIPT");
+   let files;
+   if(events.length){
+    phase="market_preparation";
+    const marketBase=copy(await deps.market.readMarketBaseline(baseline.head,deps.publication));
+    requireThat(marketBase.head===baseline.head,"E_MARKET_BASELINE");
+    const plan=deps.market.planRanges({ranges:copy(marketBase.ranges),prices:copy(marketBase.market.prices),events:copy(events)});
+    if(plan.changed){
+     requireThat(typeof deps.local.prepareMarket==="function","E_DEPENDENCIES");
+     const refreshed=copy(await deps.local.prepareMarket({ranges:copy(plan.ranges),existingContent:marketBase.files.find(f=>f.path==="market.prices.json").content,end:snapshot.fetchedAt.slice(0,10)}));
+     requireThat(refreshed.status==="validated"&&typeof refreshed.rangesContent==="string"&&typeof refreshed.marketContent==="string","E_MARKET_RECEIPT");
+     const ranges=deps.market.validateRanges(JSON.parse(refreshed.rangesContent)),market=deps.market.validateMarketData(JSON.parse(refreshed.marketContent));
+     requireThat(JSON.stringify(Object.entries(ranges).sort())===JSON.stringify(Object.entries(plan.ranges).sort()),"E_MARKET_RECEIPT");
+     // Retain every known historical date, including all closed securities.
+     for(const [ticker,rows] of Object.entries(marketBase.market.prices)){
+      const dates=new Set((market.prices[ticker]||[]).map(row=>row.date));
+      requireThat(rows.every(row=>dates.has(row.date)),"E_MARKET_HISTORY_LOSS");
+     }
+     files=[{path:"data.enc.json",content:prepared.content,sha256:prepared.validatedSha256}];
+     for(const [path,content] of [["scripts/market_price_ranges.json",refreshed.rangesContent],["market.prices.json",refreshed.marketContent]]){
+      const old=marketBase.files.find(file=>file.path===path);
+      requireThat(old&&await deps.hash(old.content)===old.sha256,"E_MARKET_BASELINE");
+      if(content!==old.content)files.push({path,content,sha256:await deps.hash(content)});
+     }
+    }
+   }
    phase=request.publish===true?"publication":"publication_preflight";
-   const result=await deps.publisher.publishData({operationId:request.operationId,expectedHead:baseline.head,expectedCipherSha256:baseline.sha256,content:prepared.content,validatedSha256:prepared.validatedSha256,publish:request.publish===true},deps.publication);
-   if(["published","validated","dry_run","unchanged"].includes(result.status))return {...result,operationId:request.operationId,notify:false};
+   const result=files
+    ? await deps.release.publishRelease({operationId:request.operationId,expectedHead:baseline.head,expectedSourceHashes:Object.fromEntries(files.map(file=>[file.path,file.sha256])),files,publish:request.publish===true},deps.publication)
+    : await deps.publisher.publishData({operationId:request.operationId,expectedHead:baseline.head,expectedCipherSha256:baseline.sha256,content:prepared.content,validatedSha256:prepared.validatedSha256,publish:request.publish===true},deps.publication);
+   if(["published","validated","dry_run","unchanged"].includes(result.status))return {...result,operationId:request.operationId,notify:result.status==="published"&&events.length>0,...(events.length?{positionEvents:events,eventsReady:result.status==="published"}:{})};
    return {...result,operationId:request.operationId,phase,notify:true};
   }catch(error){return {status:"failed",operationId:request?.operationId,phase,code:errorCode(error),notify:true,productionPreserved:!["publication"].includes(phase)};}
  }

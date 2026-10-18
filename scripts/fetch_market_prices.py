@@ -93,35 +93,58 @@ def fetch_with_retries(ticker, start, end, retries):
     raise AssertionError("unreachable")
 
 
-def validate_prices(ranges, prices, end):
+def validate_rows(ticker, rows):
+    if not isinstance(rows, list) or not rows:
+        raise ValueError(f"{ticker}: prices must be a non-empty array")
+    dates = []
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"date", "close"}:
+            raise ValueError(f"{ticker}: every row must contain only date and close")
+        date = row["date"]
+        if not isinstance(date, str) or parse_date(date).isoformat() != date:
+            raise ValueError(f"{ticker}: price dates must use YYYY-MM-DD")
+        close = row["close"]
+        if isinstance(close, bool) or not isinstance(close, (int, float)):
+            raise ValueError(f"{ticker} {date}: close must be numeric")
+        if not math.isfinite(close) or close <= 0:
+            raise ValueError(f"{ticker} {date}: close must be finite and positive")
+        dates.append(date)
+    if dates != sorted(dates) or len(dates) != len(set(dates)):
+        raise ValueError(f"{ticker}: dates must be sorted and unique")
+    return dates
+
+
+def validate_prices(ranges, prices, end, existing_prices=None):
+    if not ranges:
+        raise ValueError("At least one active ticker is required")
     if set(prices) != set(ranges):
         raise ValueError("Fetched ticker set does not match configured ticker set")
 
     end_date = parse_date(end)
     latest_dates = set()
     for ticker, start in ranges.items():
+        if parse_date(start) > end_date:
+            raise ValueError(f"{ticker}: start date is after requested end date")
         rows = prices[ticker]
-        minimum_rows = max(2, (end_date - parse_date(start)).days // 2)
+        dates = validate_rows(ticker, rows)
+        # A genuinely new position may have only its first daily close available.
+        minimum_rows = max(1, (end_date - parse_date(start)).days // 2)
         if len(rows) < minimum_rows:
             raise ValueError(
                 f"{ticker}: only {len(rows)} rows; expected at least {minimum_rows}. "
                 "Refusing to replace the complete history with sparse data."
             )
 
-        dates = [row.get("date") for row in rows]
-        if dates != sorted(dates) or len(dates) != len(set(dates)):
-            raise ValueError(f"{ticker}: dates must be sorted and unique")
         if dates[0] != start:
             raise ValueError(f"{ticker}: history starts at {dates[0]}, expected {start}")
 
-        for row in rows:
-            if set(row) != {"date", "close"}:
-                raise ValueError(f"{ticker}: every row must contain only date and close")
-            close = row["close"]
-            if isinstance(close, bool) or not isinstance(close, (int, float)):
-                raise ValueError(f"{ticker} {row['date']}: close must be numeric")
-            if not math.isfinite(close) or close <= 0:
-                raise ValueError(f"{ticker} {row['date']}: close must be finite and positive")
+        previous = (existing_prices or {}).get(ticker)
+        if previous:
+            previous_dates = validate_rows(ticker, previous)
+            if start > previous_dates[0]:
+                raise ValueError(f"{ticker}: configured start would discard existing history")
+            if not set(previous_dates).issubset(dates):
+                raise ValueError(f"{ticker}: fetched prices omit existing history dates")
 
         latest = parse_date(dates[-1])
         if latest > end_date:
@@ -135,12 +158,48 @@ def validate_prices(ranges, prices, end):
     return latest_dates.pop()
 
 
+def build_result(ranges, fetched_prices, existing, end, source="yahoo-chart", generated_at=None):
+    """Validate one complete active fetch and retain all inactive price series.
+
+    `ranges` keeps the existing ticker -> start-date format. Its dates must come
+    from known trades; callers must retain the earliest previous start on reopen.
+    `fetched_prices` contains exactly those active tickers. This function performs
+    no I/O, changes no arguments, and raises before a caller may write a result.
+    """
+    if not isinstance(existing, dict):
+        raise ValueError("Existing market data must be an object")
+    existing_prices = existing.get("prices", {})
+    if not isinstance(existing_prices, dict) or (existing and not existing_prices):
+        raise ValueError("Existing market data must contain its price history")
+    for ticker, rows in existing_prices.items():
+        if not isinstance(ticker, str) or not ticker or ticker.strip().upper() != ticker:
+            raise ValueError("Existing market data contains an invalid ticker")
+        validate_rows(ticker, rows)
+
+    as_of = validate_prices(ranges, fetched_prices, end, existing_prices)
+    # An absent active range means archived, never deleted. Archived dates do not
+    # participate in freshness or shared latest-date checks.
+    prices = {ticker: [dict(row) for row in rows] for ticker, rows in existing_prices.items()}
+    prices.update({ticker: [dict(row) for row in rows] for ticker, rows in fetched_prices.items()})
+    unchanged = (
+        existing.get("asOf") == as_of
+        and existing.get("source") == source
+        and existing_prices == prices
+    )
+    timestamp = existing.get("generatedAt") if unchanged else None
+    if not isinstance(timestamp, str):
+        timestamp = generated_at or datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return {"asOf": as_of, "source": source, "generatedAt": timestamp, "prices": prices}
+
+
 def load_existing(path):
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-        return payload if isinstance(payload, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError:
         return {}
+    if not isinstance(payload, dict):
+        raise ValueError("Existing market data must be an object; output left unchanged")
+    return payload
 
 
 def write_json_atomically(path, payload):
@@ -188,6 +247,7 @@ def main():
     if any(parse_date(start) > parse_date(end) for start in ranges.values()):
         parser.error("--end must not be earlier than a configured start date")
 
+    existing = load_existing(args.output)
     prices = {}
     failures = []
     for ticker, start in ranges.items():
@@ -203,23 +263,7 @@ def main():
     if failures:
         raise SystemExit("Market price update failed; output left unchanged:\n- " + "\n- ".join(failures))
 
-    as_of = validate_prices(ranges, prices, end)
-    existing = load_existing(args.output)
-    unchanged = (
-        existing.get("asOf") == as_of
-        and existing.get("source") == args.source
-        and existing.get("prices") == prices
-    )
-    generated_at = existing.get("generatedAt") if unchanged else None
-    if not isinstance(generated_at, str):
-        generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-    result = {
-        "asOf": as_of,
-        "source": args.source,
-        "generatedAt": generated_at,
-        "prices": prices,
-    }
+    result = build_result(ranges, prices, existing, end, source=args.source)
     write_json_atomically(args.output, result)
     print(f"validated and wrote {args.output}")
 

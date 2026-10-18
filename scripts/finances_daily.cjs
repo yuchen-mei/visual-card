@@ -5,6 +5,7 @@
 // activation option. Supports an existing private password file or inherited FD.
 const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto"),readline=require("node:readline");
 const U=require("./update_finances.cjs");
+const {positionEffects}=require("./finances_positions.cjs");
 const ROOT=path.resolve(__dirname,"..");
 const PROTOCOL="visual-card-rsa-oaep-sha256-v1";
 function check(ok,code){if(!ok)throw new U.ValidationError(code);}
@@ -101,6 +102,8 @@ async function prepareCandidate({packet,existingBytes,password,html,outputDirect
   writeMetadata(ownerPath,{version:1,pid:process.pid,token:lockToken});syncDirectory(dir);
   const oldEnvelope=JSON.parse(existingBytes),previous=U.decrypt(oldEnvelope,password);
   const desired=U.buildAssetPayload(packet.snapshot,previous,{html,now,policy:packet.policy});
+  const events=positionEffects(previous,desired);
+  const effects=desired.positionLifecycle?{positionEvents:events}:{};
   const desiredBusiness=U.canonical(U.businessData(desired));
   const binding={version:1,operationHash,expectedHead:packet.expectedHead,baselineSha256:packet.baselineSha256,businessSha256:U.hash(desiredBusiness)};
   const hasCandidate=exists(candidatePath),hasBinding=exists(bindingPath),hasReceipt=exists(receiptPath);
@@ -116,10 +119,10 @@ async function prepareCandidate({packet,existingBytes,password,html,outputDirect
     const receipt={...binding,candidateSha256:U.hash(bytes)};
     if(hasReceipt)check(U.canonical(JSON.parse(privateBytes(receiptPath)))===U.canonical(receipt),"E_RECOVERY_REQUIRED");
     else writeMetadata(receiptPath,receipt);
-    return {...base,status:"validated",candidatePath,validatedSha256:receipt.candidateSha256};
+    return {...base,...effects,status:"validated",candidatePath,validatedSha256:receipt.candidateSha256};
    }catch{throw new U.ValidationError("E_RECOVERY_REQUIRED");}
   }
-  if(U.canonical(U.businessData(previous))===desiredBusiness)return {...base,status:"unchanged"};
+  if(U.canonical(U.businessData(previous))===desiredBusiness)return {...base,...effects,status:"unchanged"};
   // Persist the original binding before creating ciphertext. A receipt-less
   // candidate can only be recovered with this independently saved baseline.
   writeMetadata(bindingPath,binding);
@@ -128,7 +131,7 @@ async function prepareCandidate({packet,existingBytes,password,html,outputDirect
   const fd=fs.openSync(candidatePath,"wx",0o600);try{fs.writeFileSync(fd,result.bytes);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
   syncDirectory(dir);
   const receipt={...binding,candidateSha256:U.hash(result.bytes)};writeMetadata(receiptPath,receipt);
-  return {...base,status:"validated",candidatePath,validatedSha256:receipt.candidateSha256};
+  return {...base,...effects,status:"validated",candidatePath,validatedSha256:receipt.candidateSha256};
  }finally{
   // Remove only the lock this call created. Anything unexpected stays for review.
   try{const owner=JSON.parse(privateBytes(ownerPath));if(owner.token===lockToken){fs.unlinkSync(ownerPath);fs.rmdirSync(lockPath);syncDirectory(dir);}}catch{}

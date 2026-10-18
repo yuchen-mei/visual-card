@@ -88,7 +88,11 @@ function applyTradeUpdates(next, previous, snapshot) {
     check(record(row) && accounts.includes(identifier(row.accountId)), "TRADES_ACCOUNT_SCOPE_MISMATCH");
     date(row.date); identifier(row.sourceId);
     if (row.date <= cutoff) continue; // No inference or correction of older gaps.
-    check(encoded(Object.keys(row).sort()) === encoded(required), "TRADES_UNSUPPORTED_WINDOW_ROW");
+    check(encoded(Object.keys(row).filter(key => key !== "securityId").sort()) === encoded(required), "TRADES_UNSUPPORTED_WINDOW_ROW");
+    if (Object.hasOwn(row, "securityId")) {
+      identifier(row.securityId);
+      check(row.securityId.trim().length > 0 && row.securityId.length <= 200, "TRADES_INVALID_ID");
+    }
     check(row.date <= sourceDay && (updates.sourceAsOf === null || row.date <= updates.sourceAsOf), "TRADES_FUTURE_DATE");
     check(typeof row.ticker === "string" && /^[A-Z][A-Z0-9.-]{0,14}$/.test(row.ticker)
       && !["CASH", "CD"].includes(row.ticker), "TRADES_INVALID_TICKER");

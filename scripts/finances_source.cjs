@@ -11,6 +11,10 @@ function sourceId(value) {
   sourceRequire(typeof value === "string" && value.length > 0 && value.length <= 512, "SOURCE_INVALID_ID");
   return value;
 }
+function sourceSecurityId(value) {
+  sourceRequire(typeof value === "string" && value.trim().length > 0 && value.length <= 200 && !/[\x00-\x1f\x7f]/.test(value), "SOURCE_INVALID_ID");
+  return value;
+}
 function sourceDate(value) {
   sourceRequire(typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value), "SOURCE_INVALID_DATE");
   const time = Date.parse(`${value}T00:00:00Z`);
@@ -167,7 +171,7 @@ function normalizeAssetSnapshot({ linkedAccounts, holdingsResponses, fetchedAt, 
       sourceRequire(entry && entry.signature === signature, "SOURCE_PAGE_MISSING_OR_QUERY_CHANGED");
       for (const row of entry.page.items) {
         sourceRequire(row?.account_id === account.id, "SOURCE_HOLDING_ACCOUNT_MISMATCH");
-        sourceId(row.security_id);
+        const securityId = sourceSecurityId(row.security_id);
         sourceRequire(!securityIds.has(row.security_id), "SOURCE_DUPLICATE_SECURITY"); securityIds.add(row.security_id);
         sourceCurrency(row);
         const value = sourceCents(row.institution_value);
@@ -185,7 +189,7 @@ function normalizeAssetSnapshot({ linkedAccounts, holdingsResponses, fetchedAt, 
         sourceRequire(typeof row.quantity === "number" && Number.isFinite(row.quantity) && row.quantity > 0, "SOURCE_INVALID_QUANTITY");
         sourceRequire(typeof row.institution_price === "number" && Number.isFinite(row.institution_price) && row.institution_price > 0, "SOURCE_INVALID_PRICE");
         sourceRequire(Math.abs(sourceCents(row.quantity * row.institution_price) - value) <= 1, "SOURCE_POSITION_VALUE_MISMATCH");
-        const position = { accountId: account.id, ticker: row.ticker_symbol, type: type === "etf" ? "etf" : "stock", shares: row.quantity, valueCents: value };
+        const position = { accountId: account.id, securityId, ticker: row.ticker_symbol, type: type === "etf" ? "etf" : "stock", shares: row.quantity, valueCents: value };
         if (row.cost_basis !== null && row.cost_basis !== undefined) position.costBasisCents = sourceCents(row.cost_basis);
         let priceDate = null;
         if (row.institution_price_datetime !== null && row.institution_price_datetime !== undefined) {
@@ -300,7 +304,7 @@ function normalizeTradeUpdates({ transactionResponses, policy, fetchedAt } = {})
         }
         sourceRequire((side === "buy" || side === "sell") && row.subtype === side, "SOURCE_UNSUPPORTED_TRADE_KIND");
         sourceRequire(row.is_cash_equivalent === false, "SOURCE_TRADE_CASH_CLASSIFICATION_INVALID");
-        sourceId(row.security_id);
+        const securityId = sourceSecurityId(row.security_id);
         sourceCurrency(row);
         const date = sourceDate(row.date);
         sourceRequire(typeof row.ticker_symbol === "string" && /^[A-Z][A-Z0-9.-]{0,14}$/.test(row.ticker_symbol) && !["CASH", "CD"].includes(row.ticker_symbol), "SOURCE_INVALID_TICKER");
@@ -309,7 +313,7 @@ function normalizeTradeUpdates({ transactionResponses, policy, fetchedAt } = {})
         sourceRequire(typeof row.amount === "number" && Number.isFinite(row.amount) && (side === "buy" ? row.amount > 0 : row.amount < 0), "SOURCE_TRADE_AMOUNT_SIGN_INVALID");
         const magnitude = sourceCents(Math.abs(row.amount));
         sourceRequire(magnitude > 0, "SOURCE_TRADE_AMOUNT_SIGN_INVALID");
-        rows.push({ accountId, sourceId: id, date, ticker: row.ticker_symbol, side, shares: Math.abs(row.quantity), price: row.price, amountCents: side === "buy" ? magnitude : -magnitude, feesCents: sourceCents(row.fees) });
+        rows.push({ accountId, sourceId: id, securityId, date, ticker: row.ticker_symbol, side, shares: Math.abs(row.quantity), price: row.price, amountCents: side === "buy" ? magnitude : -magnitude, feesCents: sourceCents(row.fees) });
       }
       if (!entry.page.has_more) break;
       cursor = entry.page.next_cursor;

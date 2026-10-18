@@ -14,24 +14,24 @@
  const nativeCodes=new Set("E_ACCESS_OBJECT E_ACL_SCOPE E_BASELINE E_CHILD_IDENTITY E_CHILD_PROTOCOL E_CHILD_START E_CLOSED_VERB_REQUIRED E_CONFIG E_CORE_DUMP_POLICY E_ENROLLMENT_ACCESS E_ENROLLMENT_FAILED E_ENROLLMENT_RECOVERY_REQUIRED E_ENROLLMENT_ROLLED_BACK E_ENTITLEMENTS_REJECTED E_EXACT_IDENTITY_REQUIRED E_HARDENED_ADHOC_REQUIRED E_INTERACTION_POLICY E_ITEM_ALREADY_EXISTS E_KEYCHAIN_UNAVAILABLE E_NATIVE_PREFLIGHT E_PASSWORD_INPUT E_PREFLIGHT_ONLY E_PRIVATE_OUTPUT E_PRIVATE_PIPE E_RUNTIME_IDENTITY E_STATUS_OUTPUT E_TEST_ENROLLMENT_DISABLED E_TRUSTED_APPLICATION".split(" "));
  const prepareCodes={baseline_write:"E_PREPARE_BASELINE_WRITE",native_start:"E_PREPARE_NATIVE_START",native_header:"E_PREPARE_NATIVE_HEADER",seal:"E_PREPARE_SEAL",native_submit:"E_PREPARE_NATIVE_SUBMIT",native_result:"E_PREPARE_NATIVE_RESULT",candidate_read:"E_PREPARE_CANDIDATE_READ"};
  const quote=value=>"'"+String(value).replace(/'/g,"'\\''")+"'";
- function createRuntime({tools,config,source,transport,publisher,orchestrator}){
+ function createRuntime({tools,config,source,transport,publisher,orchestrator,release,market}){
   config=JSON.parse(JSON.stringify(config));
   for(const key of ["repositoryDirectory","privateDirectory","journalDirectory","nodeBinary",config.passwordFile?"passwordFile":"nativeHelper"]){if(typeof config[key]!=="string"||!config[key].startsWith("/")||/[\r\n\0]/.test(config[key]))fail("E_RUNTIME_CONFIG");}
   const script=name=>config.repositoryDirectory+"/scripts/"+name;
   const github={fetch:args=>tools.mcp__codex_apps__github_fetch(args),createBlob:args=>tools.mcp__codex_apps__github_create_blob(args),createTree:args=>tools.mcp__codex_apps__github_create_tree(args),createCommit:args=>tools.mcp__codex_apps__github_create_commit(args),updateRef:args=>tools.mcp__codex_apps__github_update_ref(args)};
-  async function exec(cmd,{tty=false,privileged=false,maxTokens=12000}={}){
-   return tools.exec_command({cmd,workdir:config.repositoryDirectory,tty,yield_time_ms:1000,max_output_tokens:maxTokens,...(privileged?{sandbox_permissions:"require_escalated",justification:"运行已授权的 visual-card 专用钥匙串程序，仅验证和加密投资数据；不授予其他程序钥匙串权限。"}:{})});
+  async function exec(cmd,{tty=false,privileged=false,maxTokens=12000,justification}={}){
+   return tools.exec_command({cmd,workdir:config.repositoryDirectory,tty,yield_time_ms:1000,max_output_tokens:maxTokens,...(privileged?{sandbox_permissions:"require_escalated",justification:justification||"运行已授权的 visual-card 专用钥匙串程序，仅验证和加密投资数据；不授予其他程序钥匙串权限。"}:{})});
   }
-  async function response(initial,{expectedSessionId,onExit}={}){
+  async function response(initial,{expectedSessionId,onExit,maxTokens=12000,attempts=30,maxChars=250000}={}){
    if(!object(initial))fail("E_RUNTIME_RESPONSE");
    const pinned=expectedSessionId===undefined?initial.session_id:expectedSessionId;
    if(pinned!==undefined&&!sessionId(pinned))fail("E_RUNTIME_SESSION");
    let r=initial,output="";
-   for(let i=0;i<30;i++){
+   for(let i=0;i<attempts;i++){
     if(!object(r)||(r.output!==undefined&&typeof r.output!=="string")||(r.exit_code!==undefined&&!Number.isInteger(r.exit_code)))fail("E_RUNTIME_RESPONSE");
     if(r.session_id!==undefined&&r.session_id!==pinned)fail("E_RUNTIME_SESSION");
     if(r.exit_code!==undefined&&onExit)onExit();
-    output+=r.output||"";if(output.length>250000)fail("E_RUNTIME_OUTPUT");
+    output+=r.output||"";if(output.length>maxChars)fail("E_RUNTIME_OUTPUT");
     const lines=output.trim().split(/\r?\n/).filter(Boolean);
     if(lines.length===1){
      let value,parsed=false;try{value=JSON.parse(lines[0]);parsed=true;}catch{}
@@ -39,7 +39,7 @@
     }
     if(r.exit_code!==undefined)fail("E_RUNTIME_PROCESS");
     if(pinned===undefined)fail("E_RUNTIME_PROCESS");
-    r=await tools.write_stdin({session_id:pinned,chars:"",yield_time_ms:1000,max_output_tokens:12000});
+    r=await tools.write_stdin({session_id:pinned,chars:"",yield_time_ms:1000,max_output_tokens:maxTokens});
    }
    fail("E_RUNTIME_TIMEOUT");
   }
@@ -119,8 +119,25 @@
     throw safe;
    }
   }
+  async function prepareMarket(request){
+   let processId,done=false;
+   try{
+    market.validateRanges(request.ranges);market.validateMarketData(JSON.parse(request.existingContent));
+    const started=await exec("stty -echo -icanon && "+[quote(config.nodeBinary),quote(script("finances_market_io.cjs")),"--serve","--directory",quote(config.privateDirectory),"--baseline-sha",quote(transport.hash(request.existingContent))].join(" "),{tty:true,privileged:true,justification:"按已授权的持仓配置更新请求，仅获取公开股票行情并在仓库外临时目录校验；不读取凭据、不直接发布。"});
+    processId=started.session_id;
+    const ready=(await response(started,{expectedSessionId:processId})).value;
+    if(ready.status!=="ready"||!sessionId(processId))fail("E_MARKET_PREPARATION");
+    const submitted=await tools.write_stdin({session_id:processId,chars:JSON.stringify({ranges:request.ranges,end:request.end})+"\n",yield_time_ms:1000,max_output_tokens:100000});
+    const result=(await response(submitted,{expectedSessionId:processId,onExit:()=>{done=true;},maxTokens:100000,attempts:180,maxChars:2200000})).value;
+    if(result.status!=="validated")fail("E_MARKET_PREPARATION");
+    return result;
+   }catch{throw new RuntimeError("E_MARKET_PREPARATION");}
+   finally{if(processId&&!done)try{await tools.write_stdin({session_id:processId,chars:"\u0003",yield_time_ms:1000,max_output_tokens:100});}catch{}}
+  }
   const publication={github,hash:text=>transport.hash(text),journal};
-  const deps={finances:{getLinkedAccounts:args=>tools.mcp__codex_apps__finances_get_linked_accounts(args),query:args=>tools.mcp__codex_apps__finances_query(args)},source,publisher,publication,hash:text=>transport.hash(text),now:()=>Date.now(),local:{prepare}};
+  if(config.positionEventsEnabled!==undefined&&typeof config.positionEventsEnabled!=="boolean")fail("E_POSITION_CONFIG");
+  if(config.positionEventsEnabled===true&&(!Array.isArray(config.positionAccountHashes)||config.positionAccountHashes.length!==1||!config.positionAccountHashes.every(h=>/^[a-f0-9]{64}$/.test(h))||typeof release?.publishRelease!=="function"||typeof market?.readMarketBaseline!=="function"))fail("E_POSITION_CONFIG");
+  const deps={finances:{getLinkedAccounts:args=>tools.mcp__codex_apps__finances_get_linked_accounts(args),query:args=>tools.mcp__codex_apps__finances_query(args)},source,publisher,publication,hash:text=>transport.hash(text),now:()=>Date.now(),local:{prepare,prepareMarket},...(config.positionEventsEnabled===true?{positionAccountHashes:config.positionAccountHashes,release,market}:{})};
   async function runScheduled(request){
    request=JSON.parse(JSON.stringify(request));
    if(Object.keys(request).sort().join(",")!=="accountHashes,publish"||request.publish!==true||!Array.isArray(request.accountHashes)||!request.accountHashes.length||request.accountHashes.some(h=>typeof h!=="string"||!/^[a-f0-9]{64}$/.test(h)))fail("E_SCHEDULE_REQUEST");
@@ -139,9 +156,9 @@
    if(outcome.status!=="completed"&&typeof result.code==="string"&&/^[A-Z][A-Z0-9_]{0,79}$/.test(result.code))outcome.code=result.code;
    const final=(await response(await tools.write_stdin({session_id:started.session_id,chars:JSON.stringify(outcome)+"\n",yield_time_ms:1000,max_output_tokens:2000}))).value;
    if(final.type!=="final")fail("E_SCHEDULE_PROTOCOL");
-   return {...final,iteration:result};
+   return {...final,notify:final.notify||result.notify===true,...(result.eventsReady?{positionEvents:result.positionEvents,eventsReady:true}:{}),iteration:result};
   }
-  return {run:request=>orchestrator.runIteration(request,deps),runScheduled,prepare,publication,journal,config};
+  return {run:request=>orchestrator.runIteration(request,deps),runScheduled,prepare,prepareMarket,publication,journal,config};
  }
  return {createRuntime};
 });

@@ -3,6 +3,7 @@
 // Synthetic fixtures only. No connector, encrypted files, credentials or writes.
 const {test} = require("node:test");
 const assert = require("node:assert/strict");
+const {createHash} = require("node:crypto");
 const {applyTradeUpdates, FinancesTradesError} = require("./finances_trades.cjs");
 const clone = value => JSON.parse(JSON.stringify(value));
 function fixture() {
@@ -45,6 +46,25 @@ test("repeated same-ID economics are a no-op and cutoff never advances", () => {
   assert.deepEqual(apply(first,snapshot),first);
   const more=clone(snapshot);more.tradeUpdates.rows.push({...more.tradeUpdates.rows[0],sourceId:"synthetic-fill-b",date:"2025-01-12"});
   const second=apply(first,more);assert.equal(second.trading.DEMO.orders.length,4);assert.equal(second.tradeSync.baselineCutoff,"2025-01-10");
+});
+test("optional security identity preserves legacy economics digests and deployed sync", () => {
+  const {previous,snapshot}=fixture(), legacy=apply(previous,snapshot), identified=clone(snapshot);
+  identified.tradeUpdates.rows[0].securityId="x".repeat(200);
+  const withIdentity=apply(previous,identified);
+  const expectedDigest=createHash("sha256").update(JSON.stringify({date:"2025-01-11",ticker:"DEMO",side:"buy",shares:2,price:10,amountCents:2000,feesCents:0})).digest("hex");
+  assert.equal(legacy.tradeSync.transactions[0].digest,expectedDigest);
+  assert.equal(withIdentity.tradeSync.transactions[0].digest,expectedDigest);
+  assert.deepEqual(withIdentity,legacy);
+  assert.deepEqual(apply(legacy,identified),legacy);
+  assert.deepEqual(apply(withIdentity,snapshot),withIdentity);
+});
+test("optional security identity must be valid and cannot permit other extra fields", () => {
+  for(const invalid of [undefined,null,""," ",12,"x".repeat(201),"bad\nidentity"])
+    rejects("TRADES_INVALID_ID",({snapshot})=>{snapshot.tradeUpdates.rows[0].securityId=invalid;});
+  rejects("TRADES_UNSUPPORTED_WINDOW_ROW",({snapshot})=>{
+    snapshot.tradeUpdates.rows[0].securityId="synthetic-security";
+    snapshot.tradeUpdates.rows[0].securityName="unexpected";
+  });
 });
 test("bootstrap rejects matching legacy economics despite a later settlement date", () => {
   rejects("TRADES_LEGACY_DUPLICATE_REQUIRES_REVIEW", ({previous, snapshot}) => {

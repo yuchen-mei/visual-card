@@ -25,10 +25,19 @@ function freeze(value) { if (value && typeof value === "object") { Object.values
 test("preserves provider signs, settlement dates and sold tickers without holdings", () => {
   const result = normalizeTradeUpdates(fixture());
   assert.deepEqual(result, { version: 1, source: "Finances", fetchedAt: "2025-03-12T12:00:00.000Z", sourceAsOf: null, dateBasis: "provider-settlement-date", allPagesFetched: true, queriedFrom: null, historyFromInception: false, accountIds: ["synthetic-broker"], rows: [
-    { accountId: "synthetic-broker", sourceId: "synthetic-buy", date: "2025-03-11", ticker: "SYNTH", side: "buy", shares: 2, price: 10.125, amountCents: 2025, feesCents: 0 },
-    { accountId: "synthetic-broker", sourceId: "synthetic-sell", date: "2025-03-11", ticker: "SOLD", side: "sell", shares: 2, price: 10.125, amountCents: -2025, feesCents: 0 }
+    { accountId: "synthetic-broker", sourceId: "synthetic-buy", securityId: "synthetic-security", date: "2025-03-11", ticker: "SYNTH", side: "buy", shares: 2, price: 10.125, amountCents: 2025, feesCents: 0 },
+    { accountId: "synthetic-broker", sourceId: "synthetic-sell", securityId: "synthetic-security", date: "2025-03-11", ticker: "SOLD", side: "sell", shares: 2, price: 10.125, amountCents: -2025, feesCents: 0 }
   ] });
   assert.equal(Object.hasOwn(result, "income"), false);
+});
+
+test("trade security identity comes from each source row and rejects invalid IDs", () => {
+  const input = fixture(); page(input).items[0].security_id = "x".repeat(200);
+  page(input).items[1].security_id = "synthetic-sold-security";
+  const result = normalizeTradeUpdates(input);
+  assert.deepEqual(result.rows.map(row => row.securityId), ["x".repeat(200), "synthetic-sold-security"]);
+  for (const invalid of [undefined, null, "", " ", 12, "x".repeat(201), "bad\nidentity"])
+    fails(value => { page(value).items[0].security_id = invalid; }, "SOURCE_INVALID_ID");
 });
 
 test("follows all cursor pages regardless of batch order and accepts raw MCP wrappers", () => {

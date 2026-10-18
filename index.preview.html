@@ -3618,8 +3618,7 @@
       const holdings = data.holdings;
       const largest = holdings[0];
       const perf = data.performance;
-      const manualCapital = data.userConfirmedCapital?.source === "user-confirmed" && data.userConfirmedCapital?.updatePolicy === "explicit-user-only" ? data.userConfirmedCapital : null;
-      const principal = manualCapital ? manualCapital.principalCents / 100 : perf.totalPrincipal;
+      const principal = perf.totalPrincipal;
 
       $("meta").textContent = `${data.asOf || "latest"} · ${data.currency || "USD"} · 现金 + 股票 / ETF`;
       $("largestHolding").textContent = largest ? `${largest.ticker} ${formatPct(largest.weight)}` : "–";

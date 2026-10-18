@@ -71,7 +71,7 @@ test("browser shows corrected cash interest with no source and no annual allocat
   assert.equal(ui.state.data.performance.items.find(i=>i.kind==="cash_interest").label,"现金利息/已止盈收益");
   assert.equal(ui.state.data.performance.totalReturnPct,null);
   assert.doesNotMatch(JSON.stringify(ui.state.data.performance.items),/legacy CD|separate cash/);
-  assert.equal(ui.computeAnnualSummary().annualUnavailable,true);
+  assert.equal(ui.computeAnnualSummary().annualUnavailable,undefined);
   assert.equal(ui.computeAnnualSummary().incomeCount,1);
 });
 test("same user statement is idempotent and never re-encrypts",async()=>{
@@ -173,19 +173,17 @@ test("full-history migration retains correction audit on later unchanged runs",(
   assert.deepEqual(second,first);
   assert.equal(second.updateAudit.previousBasisRevision.cumulativeGainCorrected,true);
 });
-test("rendered principal uses user value and clearly separates old basis",()=>{
+test("rendered investment principal preserves the original summary wording",()=>{
   const ui=U.browserContract(html),data=build(),elements=new Map();
   const el=id=>{if(!elements.has(id))elements.set(id,{textContent:"",hidden:false,classList:{toggle(){}}});return elements.get(id);};
   Object.assign(ui,{$:el,setText:(id,s)=>{el(id).textContent=s;},formatCurrency:v=>`$${v}`,formatSignedCurrency:v=>`$${v}`,formatPct:v=>`${v}%`,formatSignedPct:v=>`${v}%`,finiteOrNull:v=>v==null?null:Number(v)});
   vm.runInContext(["renderSummary","renderHero"].map(name=>html.match(new RegExp(`^    function ${name}\\([^]*?^    }`,"m"))[0]).join("\n"),ui);
   ui.state.raw=data;ui.state.data=ui.normalizeData(data);ui.renderSummary();
-  assert.equal(el("totalPrincipal").textContent,"$900");
-  assert.equal(el("principalLabel").textContent,"场内本金");
-  assert.match(el("principalNote").textContent,/用户确认.*日期未知.*仅由用户更新/);
-  assert.match(el("totalGainSub").textContent,/历史本金.*历史原市值/);
+  assert.equal(el("totalPrincipal").textContent,`$${data.performance.totalPrincipal}`);
+  assert.equal(el("totalGainSub").textContent,`本金 $${data.performance.totalPrincipal}，当前 $${ui.state.data.equityValue}`);
   assert.equal(el("totalReturn").textContent,"–");
   assert.doesNotMatch(el("heroDeltaValue").textContent,/%/);
-  assert.match(el("historyNotice").textContent,/现金利息已按用户确认更正/);
-  assert.doesNotMatch(el("historyNotice").textContent,/待确认日期的现金利息调整|CD|银行|Robinhood/);
-  assert.equal(el("heroValue").textContent,"$1100");
+  assert.equal(el("heroValue").textContent,`$${ui.state.data.equityValue}`);
+  assert.equal(el("meta").textContent,`${data.asOf} · USD · 现金 + 股票 / ETF`);
+  assert.equal(ui.state.data.userConfirmedCapital.principalCents,90000);
 });

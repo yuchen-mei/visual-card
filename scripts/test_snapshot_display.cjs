@@ -259,15 +259,15 @@ test("hero excludes cash while summary retains the stable wording", () => {
   assert.equal(element("heroDeltaValue").textContent, "$40.00 (40.0%)");
 });
 
-test("manual principal affects only its display and does not rewrite returns", () => {
+test("summary uses the investment principal while retaining confirmed gross capital", () => {
   const raw = fixture();
   raw.userConfirmedCapital = { principalCents: 25000, source: "user-confirmed", updatePolicy: "explicit-user-only" };
   activate(raw);
   const before = JSON.stringify(context.state.data.performance);
   const annualBefore = JSON.stringify(plain(context.computeAnnualSummary()));
   context.renderSummary();
-  assert.equal(element("totalPrincipal").textContent, "$250.00");
-  assert.equal(element("totalGainSub").textContent, "本金 $250.00，当前 $280.00");
+  assert.equal(element("totalPrincipal").textContent, "$100.00");
+  assert.equal(element("totalGainSub").textContent, "本金 $100.00，当前 $280.00");
   assert.equal(element("totalReturn").textContent, "40.0%");
   assert.equal(context.state.data.performance.totalPrincipal, 100);
   assert.equal(JSON.stringify(context.state.data.performance), before);

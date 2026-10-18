@@ -318,7 +318,7 @@ function buildPayload(snapshot, previous, {now = Date.now(), market, html, polic
     same(annualShape(ui.computeAnnualSummary().years), annual, "PUBLIC_MARKET_ANNUAL_MISMATCH");
     same(detailShape(ui.computeAnnualSummary()), detailShape(embeddedDetails), "PUBLIC_TICKER_ANNUAL_MISMATCH");
   }
-  return result;
+  return applyUserConfirmedReturnMethod(result, previous, snapshot, {html});
 }
 
 // A current-assets update has deliberately independent gates. Missing historical
@@ -361,6 +361,80 @@ function validateManualCapital(capital) {
   requireThat(capital && cents(capital.principalCents) > 0 && capital.scope === "brokerage" && capital.source === "user-confirmed" && capital.updatePolicy === "explicit-user-only", "INVALID_MANUAL_CAPITAL");
   requireThat(capital.effectiveDate === null, "MANUAL_CAPITAL_DATE_NOT_CONFIRMED");
   if (capital.principalIncreaseCents !== undefined) cents(capital.principalIncreaseCents);
+}
+
+// This optional, encrypted policy is a user-approved display approximation.
+// It never creates income rows or treats a cash transfer as a new profit entry.
+function applyUserConfirmedReturnMethod(next, previous, snapshot, {html} = {}) {
+  const method = previous.userConfirmedReturnMethod;
+  if (method === undefined) return next;
+  requireThat(method && method.version === 1 && method.method === "principal-minus-buying-power"
+    && method.source === "user-confirmed" && method.classification === "user-approved-approximation"
+    && method.incomeDatesInvented === false, "INVALID_CONFIRMED_RETURN_METHOD");
+  validateManualCapital(previous.userConfirmedCapital);
+  same(cents(method.totalPrincipalCents), previous.userConfirmedCapital.principalCents, "RETURN_METHOD_CAPITAL_MISMATCH");
+  const supplement = cents(method.buyingPowerSupplementCents);
+  requireThat(supplement >= 0 && cents(method.providerCashCents) >= 0
+    && ["not-reflected-in-provider-snapshot", "reflected-in-provider-snapshot"].includes(method.supplementState)
+    && (method.supplementState !== "reflected-in-provider-snapshot" || supplement === 0), "INVALID_BUYING_POWER_SUPPLEMENT");
+  const brokerage = snapshot.accounts.filter(a => a.type === "brokerage");
+  requireThat(brokerage.length > 0, "RETURN_METHOD_BROKERAGE_MISSING");
+  const providerCash = cents(sum(brokerage.map(a => a.cashCents)));
+  // A balance difference alone cannot prove that this particular transfer posted.
+  // Reconcile it against source evidence and revise the encrypted state before
+  // continuing; never silently retain or remove a possibly duplicated supplement.
+  if (supplement > 0) same(providerCash, method.providerCashCents, "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW");
+  requireThat(snapshot.positions.every(p => Number.isSafeInteger(p.costBasisCents) && p.costBasisCents >= 0), "RETURN_METHOD_COST_BASIS_REQUIRED");
+  const value = cents(sum(snapshot.positions.map(p => p.valueCents)));
+  const cost = cents(sum(snapshot.positions.map(p => p.costBasisCents)));
+  const ui = browserContract(html);
+  if (supplement > 0) {
+    // A posted transfer followed by a purchase can leave cash unchanged. Do not
+    // carry the supplement across a changed position inventory or cost basis.
+    same(cost, cents(method.holdingCostBasisCents), "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW");
+    const oldShares = new Map(), newShares = new Map();
+    for (const h of previous.assetHoldings || previous.holdings || []) {
+      if (ui.isCashHolding(h)) continue;
+      requireThat(typeof h.ticker === "string" && Number.isFinite(h.shares) && h.shares > 0, "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW");
+      const ticker = h.ticker.trim().toUpperCase();
+      oldShares.set(ticker, (oldShares.get(ticker) || 0) + h.shares);
+    }
+    for (const p of snapshot.positions) newShares.set(p.ticker, (newShares.get(p.ticker) || 0) + p.shares);
+    same([...oldShares.keys()].sort(), [...newShares.keys()].sort(), "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW");
+    for (const [ticker, shares] of newShares) close(shares, oldShares.get(ticker), "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW");
+  }
+  const buyingPower = cents(providerCash + supplement);
+  const principal = cents(method.totalPrincipalCents - buyingPower);
+  requireThat(principal > 0, "NONPOSITIVE_RETURN_PRINCIPAL");
+  const gain = cents(value - principal), unrealized = cents(value - cost);
+  const nonHolding = cents(gain - unrealized);
+  const confirmedInterest = cents(method.confirmedCdInterestIncludedCents);
+  requireThat(confirmedInterest >= 0, "INVALID_CONFIRMED_INTEREST_COMPONENT");
+  const stockItem = previous.performance?.items?.find(i => ui.isStockEtfPerformanceItem(i)
+    && i.kind !== "realized_gain" && !/已实现|止盈|\brealized\b/i.test(i.label));
+  requireThat(stockItem, "RETURN_METHOD_STOCK_ITEM_REQUIRED");
+  next.userConfirmedCapital = clone(previous.userConfirmedCapital);
+  next.userConfirmedReturnMethod = {...clone(method), providerCashCents: providerCash,
+    effectiveBuyingPowerCents: buyingPower, investedPrincipalCents: principal,
+    holdingCostBasisCents: cost, unrealizedGainCents: unrealized, nonHoldingIncomeCents: nonHolding};
+  next.performance = {...clone(previous.performance), totalPrincipal: principal / 100,
+    totalCurrentValue: value / 100, totalGain: gain / 100, totalReturnPct: gain / principal * 100,
+    items: [
+      {...clone(stockItem), principal: cost / 100, currentValue: value / 100,
+        gain: unrealized / 100, returnPct: cost > 0 ? unrealized / cost * 100 : null},
+      {label: "现金利息/已止盈收益", kind: "cash_income_group", gainOnly: true,
+        principal: 0, currentValue: 0, gain: nonHolding / 100, returnPct: null,
+        components: [{kind: "cash_interest", gain: confirmedInterest / 100},
+          {kind: "other_income", gain: (nonHolding - confirmedInterest) / 100}]}
+    ]};
+  if (next.historyStatus?.state === "preserved" || previous.basisRevision)
+    next.basisRevision = {...clone(previous.basisRevision || {}), cumulativeGainCorrected: true};
+  if (previous.historySnapshot) next.historySnapshot = clone(previous.historySnapshot);
+  const normalized = ui.normalizeData(clone(next));
+  for (const key of ["totalGain", "totalPrincipal", "totalCurrentValue", "totalReturnPct"])
+    same(normalized.performance[key], next.performance[key], "BROWSER_RETURN_METHOD_MISMATCH");
+  same(cents(sum(normalized.performance.items.map(i => roundedCents(i.gain)))), gain, "RETURN_METHOD_COMPONENTS_MISMATCH");
+  return next;
 }
 
 // A user statement can correct an undated cumulative item and the separately
@@ -482,14 +556,18 @@ function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy} 
   const next={...freezeHistory(previous),holdings,assetSnapshot:{retrievedAt:snapshot.fetchedAt,sourceAsOf:known?sourceDates[0]:null,sourceDateStatus:known?"known":"unknown"},assetAudit:{version:1,accountSourceDates:privateDates.sort((a,b)=>a.account.localeCompare(b.account)),positionPriceDates:positions.map(p=>({position:hash(`${p.accountId}:${p.ticker}`),priceAsOf:p.priceAsOf||null})).sort((a,b)=>a.position.localeCompare(b.position))}};
   if(snapshot.historicalInterestReview!==undefined)attachHistoricalReview(next,snapshot.historicalInterestReview,{html,policy});
   if(previous.userConfirmedCapital)validateManualCapital(previous.userConfirmedCapital);
+  applyUserConfirmedReturnMethod(next, previous, snapshot, {html});
   // Verify through the actual production display path, with old history frozen.
   const ui=browserContract(html), normalized=ui.normalizeData(clone(next));
   same(roundedCents(normalized.totalAssetValue),total,"BROWSER_BALANCE_MISMATCH");
   same(roundedCents(normalized.equityValue),total-cash,"BROWSER_SECURITIES_MISMATCH");
   same(roundedCents(normalized.cashValue),cash,"BROWSER_CASH_MISMATCH");
   requireThat(normalized.holdings.every(item=>!ui.isCashHolding(item)),"BROWSER_CASH_IN_SECURITIES");
-  for(const key of ["totalGain","totalPrincipal","totalCurrentValue","totalReturnPct"])same(normalized.performance[key],previous.performance[key],"PRESERVED_PERFORMANCE_CHANGED");
-  for(const key of ["performance","trading","income"])same(next[key],previous[key],"PRESERVED_HISTORY_CHANGED");
+  if (!previous.userConfirmedReturnMethod) {
+    for(const key of ["totalGain","totalPrincipal","totalCurrentValue","totalReturnPct"])same(normalized.performance[key],previous.performance[key],"PRESERVED_PERFORMANCE_CHANGED");
+    same(next.performance,previous.performance,"PRESERVED_HISTORY_CHANGED");
+  }
+  for(const key of ["trading","income"])same(next[key],previous[key],"PRESERVED_HISTORY_CHANGED");
   return next;
 }
 
@@ -562,4 +640,4 @@ async function main(args = process.argv.slice(2)) {
   }
 }
 if (require.main === module) main().catch(error => { console.error(JSON.stringify({status: "failed", code: error instanceof ValidationError ? error.message : "UPDATE_FAILED", preserved: true})); process.exitCode = 1; });
-module.exports = {ValidationError, canonical, hash, validateEnvelope, decrypt, encrypt, browserContract, buildPayload, buildAssetPayload, buildHistoricalReviewPayload, buildBasisRevisionPayload, businessData, prepareUpdate, writeAtomically, readPrivateInput, main};
+module.exports = {ValidationError, canonical, hash, validateEnvelope, decrypt, encrypt, browserContract, buildPayload, buildAssetPayload, buildHistoricalReviewPayload, buildBasisRevisionPayload, applyUserConfirmedReturnMethod, businessData, prepareUpdate, writeAtomically, readPrivateInput, main};

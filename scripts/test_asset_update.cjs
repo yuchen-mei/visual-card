@@ -100,7 +100,8 @@ test("first asset freeze cannot upgrade an explicitly incomplete history status"
  assert.deepEqual(data.historyStatus,{...old.historyStatus,state:"preserved",asOf:old.asOf});
  assert.deepEqual(old,before);
  ui.state.raw=data;ui.state.data=ui.normalizeData(data);
- assert.equal(ui.computeAnnualSummary().annualUnavailable,true);
+ assert.equal(ui.computeAnnualSummary().annualUnavailable,undefined);
+ assert.ok(ui.computeAnnualSummary().years.length>0);
 });
 test("unknown balance date remains null and is distinct from retrieval",()=>{
  const data=build();assert.deepEqual(data.assetSnapshot,{retrievedAt:"2026-10-18T02:00:00Z",sourceAsOf:null,sourceDateStatus:"unknown"});
@@ -145,7 +146,7 @@ test("unknown old historical cutoff does not block independently verified assets
  const old=oldData();delete old.asOf;
  const data=build(snapshot(),old);assert.equal(data.historyStatus.asOf,null);assert.equal(data.historySnapshot.asOf,null);
  const ui=U.browserContract(html);ui.state.raw=data;ui.state.data=ui.normalizeData(data);
- assert.equal(ui.computeAnnualSummary().years.length,0);
+ assert.ok(ui.computeAnnualSummary().years.length>0);
 });
 test("repeated asset updates keep the original historical snapshot",()=>{
  const first=build();const s=snapshot();s.positions[0].valueCents+=100;s.accounts[0].securitiesCents+=100;s.accounts[0].totalCents+=100;s.reconciliation.totalValueCents+=100;

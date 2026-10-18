@@ -17,7 +17,8 @@ const build=(s=snapshot(),old=oldData(),p=policy)=>U.buildAssetPayload(s,old,{ht
 test("reconciled assets update independently while old history stays exact",()=>{
  const old=oldData(),data=build();
  assert.equal(data.holdings.reduce((n,h)=>n+h.value,0),1650);
- for(const key of ["performance","trading","income","asOf"])assert.deepEqual(data[key],old[key]);
+ for(const key of ["performance","trading","income"])assert.deepEqual(data[key],old[key]);
+ assert.equal(data.asOf,snapshot().fetchedAt.slice(0,10));assert.equal(data.historySnapshot.asOf,old.asOf);
  assert.deepEqual(data.historySnapshot.performance,old.performance);
  assert.equal(data.historyStatus.asOf,old.asOf);assert.equal(data.historyStatus.state,"preserved");
 });
@@ -104,7 +105,7 @@ test("first asset freeze cannot upgrade an explicitly incomplete history status"
  assert.ok(ui.computeAnnualSummary().years.length>0);
 });
 test("unknown balance date remains null and is distinct from retrieval",()=>{
- const data=build();assert.deepEqual(data.assetSnapshot,{retrievedAt:"2026-10-18T02:00:00Z",sourceAsOf:null,sourceDateStatus:"unknown"});
+ const data=build();assert.deepEqual(data.assetSnapshot,{retrievedAt:"2026-10-18T02:00:00Z",asOfBasis:"snapshot-calculation-date",sourceAsOf:null,sourceDateStatus:"unknown"});
  assert.ok(data.assetAudit.accountSourceDates.every(a=>a.balanceSourceAsOf===null));
 });
 test("missing historical transactions and income are retained as missing",()=>{
@@ -152,12 +153,40 @@ test("repeated asset updates keep the original historical snapshot",()=>{
  const first=build();const s=snapshot();s.positions[0].valueCents+=100;s.accounts[0].securitiesCents+=100;s.accounts[0].totalCents+=100;s.reconciliation.totalValueCents+=100;
  const second=build(s,first);assert.deepEqual(second.historySnapshot,first.historySnapshot);assert.equal(second.historyStatus.asOf,"2026-10-09");
 });
-test("retrieval-only changes do not re-encrypt an unchanged snapshot",async()=>{
+test("retrieval-only changes across UTC days do not re-encrypt an unchanged snapshot",async()=>{
  const data=build(), password="synthetic-only";
  const existingBytes=Buffer.from(JSON.stringify(U.encrypt(data,password)));
- const s=snapshot();s.fetchedAt="2026-10-18T02:30:00Z";s.previousCiphertextSha256=U.hash(existingBytes);s.accounts.reverse();
- const result=await U.prepareUpdate({snapshot:s,existingBytes,password,html,now,policy,encryptFn:()=>{throw Error("must not encrypt");}});
- assert.equal(result.status,"unchanged");
+ const s=snapshot();s.fetchedAt="2026-10-19T02:30:00Z";s.previousCiphertextSha256=U.hash(existingBytes);s.accounts.reverse();
+ const next=U.buildAssetPayload(s,data,{html,now:now+86400000,policy});
+ assert.equal(next.asOf,"2026-10-19");assert.deepEqual(next.historySnapshot,data.historySnapshot);
+ const result=await U.prepareUpdate({snapshot:s,existingBytes,password,html,now:now+86400000,policy,encryptFn:()=>{throw Error("must not encrypt");}});
+ assert.equal(result.status,"unchanged");assert.equal(result.bytes,undefined);
+});
+test("changed assets advance computation date while historical and income dates stay exact",async()=>{
+ const old=oldData();old.income=[{date:"2025-06-30",amount:2,kind:"cash_interest"}];
+ const first=build(snapshot(),old),password="synthetic-only";
+ const existingBytes=Buffer.from(JSON.stringify(U.encrypt(first,password))),s=snapshot();
+ s.fetchedAt="2026-10-19T02:00:00Z";s.previousCiphertextSha256=U.hash(existingBytes);
+ s.positions[0].valueCents+=100;s.accounts[0].securitiesCents+=100;s.accounts[0].totalCents+=100;s.reconciliation.totalValueCents+=100;
+ const result=await U.prepareUpdate({snapshot:s,existingBytes,password,html,now:now+86400000,policy});
+ assert.equal(result.status,"changed");const next=U.decrypt(JSON.parse(result.bytes),password);
+ assert.equal(next.asOf,"2026-10-19");assert.deepEqual(next.historySnapshot,first.historySnapshot);
+ assert.deepEqual(next.income,old.income);assert.equal(next.historySnapshot.asOf,old.asOf);
+ assert.equal(next.assetSnapshot.sourceAsOf,null);assert.equal(next.assetSnapshot.sourceDateStatus,"unknown");
+ assert.equal(next.assetSnapshot.asOfBasis,"snapshot-calculation-date");
+});
+test("calculation-date semantics migrate once even when asset amounts are unchanged",async()=>{
+ const previous=build(),password="synthetic-only";previous.asOf=previous.historySnapshot.asOf;
+ delete previous.assetSnapshot.asOfBasis;
+ const existingBytes=Buffer.from(JSON.stringify(U.encrypt(previous,password))),s=snapshot();s.previousCiphertextSha256=U.hash(existingBytes);
+ const changed=await U.prepareUpdate({snapshot:s,existingBytes,password,html,now,policy});
+ assert.equal(changed.status,"changed");const migrated=U.decrypt(JSON.parse(changed.bytes),password);
+ assert.equal(migrated.asOf,"2026-10-18");assert.equal(migrated.assetSnapshot.asOfBasis,"snapshot-calculation-date");
+ assert.deepEqual(migrated.historySnapshot,previous.historySnapshot);
+ s.previousCiphertextSha256=U.hash(changed.bytes);
+ const unchanged=await U.prepareUpdate({snapshot:s,existingBytes:changed.bytes,password,html,now,policy,
+  encryptFn:()=>{throw Error("migration must not repeat");}});
+ assert.equal(unchanged.status,"unchanged");
 });
 function review(){return {previouslyIncludedCents:2500,maturityTotalCents:2800,additionalIncomeDate:null};}
 function reviewPolicy(){return {historicalInterestReview:review(),historicalPerformanceItemIndexes:[0]};}

@@ -229,6 +229,20 @@ test("new trades cannot conceal a transfer, fee, missing execution or wrong posi
   assert.throws(() => build(noNew, old), {message: "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW"});
 });
 
+test("a zero-fee trade with inconsistent quantity-times-price rejects before encryption", async () => {
+  const old = tradeBaseline(), s = tradeSnapshot(sourceTrade({amountCents: 13000}));
+  assert.ok(old.tradeSync);
+  assert.equal(s.accounts[0].cashCents, old.userConfirmedReturnMethod.providerCashCents - 13000);
+  assert.equal(s.positions[0].shares, 12);
+  assert.equal(s.tradeUpdates.rows[0].shares * s.tradeUpdates.rows[0].price * 100, 18000);
+  const bytes = Buffer.from(JSON.stringify(U.encrypt(old, password))), original = Buffer.from(bytes);
+  s.previousCiphertextSha256 = U.hash(bytes); let encryptionCalls = 0;
+  await assert.rejects(() => U.prepareUpdate({snapshot: s, existingBytes: bytes, password, html, now, policy,
+    encryptFn() { encryptionCalls++; assert.fail("inconsistent trade must not reach encryption"); }}),
+  {message: "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW"});
+  assert.equal(encryptionCalls, 0); assert.ok(bytes.equals(original));
+});
+
 test("first bootstrap cannot relax pending-supplement guards even with real window orders", () => {
   const old = tradeBaseline(); delete old.tradeSync;
   assert.throws(() => build(tradeSnapshot(sourceTrade()), old), {message: "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW"});
@@ -281,7 +295,7 @@ test("asset returns preserve trading, income and original history without invent
   assert.equal(annual(second).years.reduce((n, row) => n + row.income, 0), 3);
   const nextDay = copy(s); nextDay.fetchedAt = "2026-10-19T02:00:00Z";
   const refreshed = U.buildAssetPayload(nextDay, second, {html, now: now + 86400000, policy});
-  assert.equal(refreshed.asOf, second.asOf);
+  assert.equal(refreshed.asOf, nextDay.fetchedAt.slice(0, 10));
   assert.deepEqual(refreshed.performance, second.performance);
   assert.deepEqual(refreshed.historySnapshot, second.historySnapshot);
   assert.deepEqual(annual(refreshed), annual(second));

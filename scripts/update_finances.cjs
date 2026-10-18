@@ -412,6 +412,7 @@ function applyUserConfirmedReturnMethod(next, previous, snapshot, {html} = {}) {
         if (!expected.has(id)) continue;
         requireThat(!seen.has(id) && row.feesCents === 0 && Number.isSafeInteger(row.amountCents)
           && ((row.side === "buy" && row.amountCents > 0) || (row.side === "sell" && row.amountCents < 0)), review);
+        requireThat(Math.abs(Math.abs(row.amountCents) - roundedCents(row.shares * row.price)) <= 1, review);
         const economics = {date: row.date, ticker: row.ticker, side: row.side, shares: row.shares,
           price: row.price, amountCents: row.amountCents, feesCents: row.feesCents};
         same(hash(JSON.stringify(economics)), expected.get(id), review);
@@ -581,7 +582,7 @@ function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy} 
     holdings.push(holding);
   }
   const known=sourceDates.every(Boolean)&&new Set(sourceDates).size===1;
-  const next={...freezeHistory(previous),holdings,assetSnapshot:{retrievedAt:snapshot.fetchedAt,sourceAsOf:known?sourceDates[0]:null,sourceDateStatus:known?"known":"unknown"},assetAudit:{version:1,accountSourceDates:privateDates.sort((a,b)=>a.account.localeCompare(b.account)),positionPriceDates:positions.map(p=>({position:hash(`${p.accountId}:${p.ticker}`),priceAsOf:p.priceAsOf||null})).sort((a,b)=>a.position.localeCompare(b.position))}};
+  const next={...freezeHistory(previous),asOf:snapshot.fetchedAt.slice(0,10),holdings,assetSnapshot:{retrievedAt:snapshot.fetchedAt,asOfBasis:"snapshot-calculation-date",sourceAsOf:known?sourceDates[0]:null,sourceDateStatus:known?"known":"unknown"},assetAudit:{version:1,accountSourceDates:privateDates.sort((a,b)=>a.account.localeCompare(b.account)),positionPriceDates:positions.map(p=>({position:hash(`${p.accountId}:${p.ticker}`),priceAsOf:p.priceAsOf||null})).sort((a,b)=>a.position.localeCompare(b.position))}};
   if(snapshot.historicalInterestReview!==undefined)attachHistoricalReview(next,snapshot.historicalInterestReview,{html,policy});
   if(previous.userConfirmedCapital)validateManualCapital(previous.userConfirmedCapital);
   try { applyTradeUpdates(next, previous, snapshot); }

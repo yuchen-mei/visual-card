@@ -3627,10 +3627,10 @@
 
       $("totalGain").textContent = formatSignedCurrency(perf.totalGain);
       $("totalGain").className = `metric-value gain ${perf.totalGain < 0 ? "negative" : ""}`;
-      $("totalGainSub").textContent = `本金 ${formatCurrency(principal)}，当前 ${formatCurrency(perf.totalCurrentValue)}`;
+      $("totalGainSub").textContent = `本金 ${formatCurrency(principal)}，当前 ${formatCurrency(data.equityValue)}`;
       $("totalReturn").textContent = perf.totalReturnPct == null ? "–" : formatSignedPct(perf.totalReturnPct);
       $("totalReturn").className = `metric-value gain ${perf.totalReturnPct < 0 ? "negative" : ""}`;
-      $("totalCurrent").textContent = formatCurrency(perf.totalCurrentValue);
+      $("totalCurrent").textContent = formatCurrency(data.equityValue);
       $("totalPrincipal").textContent = formatCurrency(principal);
       $("gainSourceCount").textContent = `${perf.items.length} 类`;
       $("perfDate").textContent = data.asOf || "latest";

@@ -251,11 +251,11 @@ test("hero excludes cash while summary retains the stable wording", () => {
   activate(fixture());
   context.renderSummary();
   assert.equal(element("heroValue").textContent, "$280.00");
-  assert.equal(element("totalCurrent").textContent, "$140.00");
+  assert.equal(element("totalCurrent").textContent, "$280.00");
   assert.equal(element("totalGain").textContent, "$40.00");
   assert.equal(element("meta").textContent, "2025-02-10 · USD · 现金 + 股票 / ETF");
   assert.equal(element("perfDate").textContent, "2025-02-10");
-  assert.equal(element("totalGainSub").textContent, "本金 $100.00，当前 $140.00");
+  assert.equal(element("totalGainSub").textContent, "本金 $100.00，当前 $280.00");
   assert.equal(element("heroDeltaValue").textContent, "$40.00 (40.0%)");
 });
 
@@ -267,7 +267,7 @@ test("manual principal affects only its display and does not rewrite returns", (
   const annualBefore = JSON.stringify(plain(context.computeAnnualSummary()));
   context.renderSummary();
   assert.equal(element("totalPrincipal").textContent, "$250.00");
-  assert.equal(element("totalGainSub").textContent, "本金 $250.00，当前 $140.00");
+  assert.equal(element("totalGainSub").textContent, "本金 $250.00，当前 $280.00");
   assert.equal(element("totalReturn").textContent, "40.0%");
   assert.equal(context.state.data.performance.totalPrincipal, 100);
   assert.equal(JSON.stringify(context.state.data.performance), before);

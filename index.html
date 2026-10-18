@@ -278,6 +278,16 @@
       line-height: 1.5;
     }
 
+    .history-notice {
+      margin-bottom: 16px;
+      padding: 12px 16px;
+      border-radius: var(--card-radius);
+      background: var(--surface-soft);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
     .actions {
       display: flex;
       gap: 8px;
@@ -1451,7 +1461,7 @@
             <div class="hero-label">当前展示资产</div>
             <div id="heroValue" class="hero-value"></div>
             <div id="heroDelta" class="hero-delta">
-              <span id="heroDeltaValue"></span><span class="hero-delta-label">累计收益</span>
+              <span id="heroDeltaValue"></span><span id="heroDeltaLabel" class="hero-delta-label">累计收益</span>
             </div>
             <div id="meta" class="meta"></div>
           </div>
@@ -1501,6 +1511,7 @@
         </section>
 
         <section id="performancePanel" class="panel" role="tabpanel" aria-labelledby="performanceTab">
+          <div id="historyNotice" class="history-notice" hidden></div>
           <div class="metric-grid">
             <div class="metric-card">
               <div class="metric-label">累计收益</div>
@@ -1510,10 +1521,10 @@
             <div class="metric-card">
               <div class="metric-label">累计收益率</div>
               <div id="totalReturn" class="metric-value"></div>
-              <div class="metric-sub">基于场内资金本金与当前市值计算</div>
+              <div id="totalReturnSub" class="metric-sub">基于场内资金本金与当前市值计算</div>
             </div>
             <div class="metric-card">
-              <div class="metric-label">当前展示资产</div>
+              <div id="performanceValueLabel" class="metric-label">当前展示资产</div>
               <div id="totalCurrent" class="metric-value"></div>
               <div class="metric-sub">现金 + 股票 / ETF</div>
             </div>
@@ -1546,8 +1557,9 @@
               <div id="gainChart" class="gain-bar" role="group" aria-label="收益构成"></div>
               <div class="summary-strip">
                 <div class="summary-item">
-                  <div class="summary-label">本金</div>
+                  <div id="principalLabel" class="summary-label">本金</div>
                   <div id="totalPrincipal" class="summary-value"></div>
+                  <div id="principalNote" class="metric-sub" hidden></div>
                 </div>
                 <div class="summary-item">
                   <div class="summary-label">收益来源</div>
@@ -2006,8 +2018,15 @@
         item.weight = Number(item.value) / total * 100;
       });
 
-      const trading = normalizeTradingData(data.trading, holdings, data.asOf);
-      const performance = normalizePerformanceData(data.performance, holdings);
+      const preserved = data.historyStatus?.state === "preserved";
+      const history = preserved ? data.historySnapshot : null;
+      const trading = normalizeTradingData(history?.trading || data.trading, holdings, data.asOf);
+      const oldPerformance = data.basisRevision?.cumulativeGainCorrected
+        ? (data.performance || {}) : (history?.performance || data.performance || {});
+      // A fresh balance snapshot cannot reconcile or rewrite incomplete historical returns.
+      const performance = preserved
+        ? { ...oldPerformance, items: normalizeCashInterestItems(Array.isArray(oldPerformance.items) ? oldPerformance.items : []) }
+        : normalizePerformanceData(data.performance, holdings);
 
       return {
         ...data,
@@ -2053,20 +2072,25 @@
 
     function normalizeCashInterestItems(items) {
       const result = [];
-      let cashInterest = null;
+      let combined = null;
       for (const source of items) {
         const item = normalizePerformanceItem(source);
-        if (item.label === "利息及已止盈收益") {
-          result.push({ ...item, label: "其他收益", kind: "other_income", gainOnly: true, returnPct: null });
-        } else if (isCashInterestItem(item)) {
-          if (!cashInterest) {
-            cashInterest = {
-              label: "现金利息", kind: "cash_interest", gainOnly: true,
-              principal: 0, currentValue: 0, gain: 0, returnPct: null
+        const otherIncome = item.kind === "other_income" || (!item.kind && (item.label === "其他收益" || item.label === "利息及已止盈收益"));
+        if (otherIncome || item.kind === "realized_gain" || isCashInterestItem(item) || item.kind === "cash_income_group") {
+          if (!combined) {
+            combined = {
+              label: "现金利息/已止盈收益", kind: "cash_interest", gainOnly: true,
+              principal: 0, currentValue: 0, gain: 0, returnPct: null,
+              components: []
             };
-            result.push(cashInterest);
+            result.push(combined);
           }
-          cashInterest.gain += item.gain;
+          // A display group is not a claim that unknown other income was a
+          // security sale. Preserve underlying kinds and sum each item once.
+          combined.gain += item.gain;
+          combined.components.push(...(Array.isArray(item.components)
+            ? item.components : [{kind: item.kind || (otherIncome ? "other_income" : "cash_interest"), gain: item.gain}]));
+          if (combined.components.some(component => component.kind !== "cash_interest")) combined.kind = "cash_income_group";
         } else {
           result.push(item);
         }
@@ -2084,7 +2108,7 @@
       if (
         totalGain === null ||
         !items.length ||
-        items.some((item) => item.kind === "other_income")
+        items.some((item) => item.kind === "other_income" || item.kind === "cash_income_group")
       ) {
         return { ...perf, items };
       }
@@ -2124,7 +2148,7 @@
         returnPct: null
       });
 
-      return { ...perf, items: nextItems };
+      return { ...perf, items: normalizeCashInterestItems(nextItems) };
     }
 
     function normalizePerformanceItem(item) {
@@ -2227,16 +2251,16 @@
       const source = new Map(
         holdings
           .filter(isTradableHolding)
-          .map((item, index) => [item.ticker, generatePreviewTradingForHolding(item, index, asOf)])
+          .map((item) => [item.ticker, { nameZh: item.nameZh || item.name || "", prices: [], orders: [] }])
       );
       Object.entries(trading || {}).forEach(([ticker, item]) => {
-        const fallback = source.get(ticker) || {};
+        if (!item || typeof item !== "object" || item.priceSource === "preview") return;
         source.set(ticker, {
-          ...fallback,
+          ...source.get(ticker),
           ...item,
-          prices: item.prices?.length ? item.prices : fallback.prices,
-          orders: item.orders?.length ? item.orders : fallback.orders,
-          priceSource: item.prices?.length ? "encrypted" : fallback.priceSource
+          prices: Array.isArray(item.prices) ? item.prices : [],
+          orders: Array.isArray(item.orders) ? item.orders : [],
+          priceSource: "encrypted"
         });
       });
 
@@ -2298,6 +2322,7 @@
 
     function applyPublicMarketPrices(marketData) {
       if (!state.data?.trading?.length || !marketData) return 0;
+      if (state.data.historyStatus?.state === "preserved") return 0;
       let updated = 0;
 
       state.data.trading.forEach((item) => {
@@ -3101,12 +3126,12 @@
       const sells = item.orders.filter((order) => order.side === "sell").length;
 
       $("tradeChartTitle").textContent = item.ticker;
-      $("tradeChartName").textContent = [item.nameZh, `${item.orders.length} 笔交易`].filter(Boolean).join(" · ");
+      $("tradeChartName").textContent = [item.nameZh, item.orders.length ? `${item.orders.length} 笔交易` : "成交记录缺失"].filter(Boolean).join(" · ");
       $("tradeChartRange").textContent = `${formatChartTime(span.min)} - ${formatChartTime(span.max)} · ${priceSourceLabel(item.priceSource)}`;
       $("tradeReturn").textContent = formatSignedPct(item.returnPct);
       $("tradeReturn").className = `summary-value gain ${item.returnPct < 0 ? "negative" : ""}`;
-      $("tradeBuyCount").textContent = `${buys} 次`;
-      $("tradeSellCount").textContent = `${sells} 次`;
+      $("tradeBuyCount").textContent = item.orders.length ? `${buys} 次` : "–";
+      $("tradeSellCount").textContent = item.orders.length ? `${sells} 次` : "–";
       setTradeReadout(item, null, true);
     }
 
@@ -3124,7 +3149,7 @@
       $("tradeReturn").className = "summary-value";
       $("tradeBuyCount").textContent = "–";
       $("tradeSellCount").textContent = "–";
-      $("tickerSelector").innerHTML = '<div class="empty-note">当前数据中没有可生成交易预览的股票持仓。</div>';
+      $("tickerSelector").innerHTML = '<div class="empty-note">缺少可展示的真实交易或价格记录。</div>';
       $("tradeList").innerHTML = "";
       $("tradeDetail").innerHTML = "";
       $("tradeDetail").hidden = true;
@@ -3300,9 +3325,11 @@
     }
 
     // 只用数据里的真实交易记录和真实价格（公开行情优先，其次内置价格），不用预览生成的示例数据。
-    function annualPositions(raw) {
+    function annualPositions(raw, options = {}) {
+      const cutoff = options.cutoff ?? Infinity;
       const trading = raw.trading && typeof raw.trading === "object" ? raw.trading : {};
       return Object.entries(trading)
+        .filter(([, item]) => item?.priceSource !== "preview")
         .map(([ticker, item]) => {
           const orders = (Array.isArray(item?.orders) ? item.orders : [])
             .map((order) => ({
@@ -3311,29 +3338,45 @@
               shares: Number(order.shares),
               price: Number(order.price)
             }))
-            .filter((order) => order.time !== null && Number.isFinite(order.shares) && order.shares > 0)
+            .filter((order) => order.time !== null && order.time <= cutoff && Number.isFinite(order.shares) && order.shares > 0)
             .sort((a, b) => a.time - b.time);
-          const publicRows = state.marketPrices
+          const publicRows = options.usePublicPrices !== false && state.marketPrices
             ? normalizePublicPriceRows(priceRowsFromMarketData(state.marketPrices, ticker))
             : [];
-          const rows = publicRows.length ? publicRows : normalizePublicPriceRows(item?.prices);
+          const rows = (publicRows.length ? publicRows : normalizePublicPriceRows(item?.prices))
+            .filter((row) => row.time <= cutoff);
           return { ticker, orders, rows };
         })
         .filter((position) => position.orders.length);
     }
 
     function computeAnnualSummary() {
-      const raw = state.raw;
-      if (!raw || !state.data) return null;
-      const positions = annualPositions(raw);
+      if (!state.raw || !state.data) return null;
+      const preserved = state.raw.historyStatus?.state === "preserved";
+      const historyAsOf = preserved ? state.raw.historyStatus.asOf : null;
+      const raw = preserved ? (state.raw.historySnapshot || state.raw) : state.raw;
+      const asOfTime = dayTime(preserved ? historyAsOf : raw.asOf);
+      const metadata = { historyPreserved: preserved, historyAsOf, incomeMissing: true };
+      if (preserved && state.raw.historyStatus.reason === "incomplete_history") {
+        const datedIncomeCount = (Array.isArray(raw.income) ? raw.income : [])
+          .filter((entry) => dayTime(entry.date) !== null && Number.isFinite(Number(entry.amount))).length;
+        // Old files have no independently verified saved annual summary. Retain
+        // their records but do not recompute an annual result from incomplete history.
+        return { years: [], tickers: [], incomeCount: datedIncomeCount, annualUnavailable: true,
+          ...metadata, incomeMissing: datedIncomeCount === 0 };
+      }
+      // Missing historical dates cannot be replaced with the retrieval date or today's date.
+      if (preserved && asOfTime === null) return { years: [], tickers: [], incomeCount: 0, ...metadata };
+      const cutoff = preserved ? asOfTime : Infinity;
+      const positions = annualPositions(raw, { cutoff, usePublicPrices: !preserved });
       const priced = positions.filter((position) => position.rows.length);
       const income = (Array.isArray(raw.income) ? raw.income : [])
         .map((entry) => ({ time: dayTime(entry.date), amount: Number(entry.amount) }))
-        .filter((entry) => entry.time !== null && Number.isFinite(entry.amount));
-      if (!priced.length && !income.length) return { years: [], tickers: [], incomeCount: 0 };
+        .filter((entry) => entry.time !== null && entry.time <= cutoff && Number.isFinite(entry.amount));
+      metadata.incomeMissing = income.length === 0;
+      if (!priced.length && !income.length) return { years: [], tickers: [], incomeCount: 0, ...metadata };
 
-      const asOfTime = dayTime(raw.asOf);
-      const latestCandidate = Math.max(
+      const latestCandidate = preserved ? asOfTime : Math.max(
         asOfTime ?? -Infinity,
         ...priced.map((position) => position.rows[position.rows.length - 1].time)
       );
@@ -3353,7 +3396,7 @@
       for (let year = firstYear; year <= currentYear; year++) {
         const start = dayTime(`${year - 1}-12-31`);
         const current = year === currentYear;
-        const end = current ? Infinity : dayTime(`${year}-12-31`);
+        const end = current ? cutoff : dayTime(`${year}-12-31`);
         const weightEnd = current ? latestTime : end;
         // 权重按整天计算，避免夏令时切换带来的一小时误差。
         const spanDays = Math.max(Math.round((weightEnd - start) / DAY_MS), 1);
@@ -3408,7 +3451,7 @@
       const tickers = priced
         .map((position) => {
           const byYear = years.map((entry) => (entry.byTicker.has(position.ticker) ? entry.byTicker.get(position.ticker) : null));
-          const holding = state.data.holdings.find((item) => item.ticker === position.ticker);
+          const holding = (preserved ? (raw.holdings || []) : state.data.holdings).find((item) => item.ticker === position.ticker);
           return {
             ticker: position.ticker,
             name: holding?.nameZh || holding?.name || raw.trading[position.ticker]?.nameZh || "",
@@ -3419,7 +3462,7 @@
         .filter((row) => row.byYear.some((value) => value !== null))
         .sort((a, b) => b.total - a.total);
 
-      return { years, tickers, latestPriceTime, incomeCount: income.length };
+      return { years, tickers, latestPriceTime, incomeCount: income.length, ...metadata };
     }
 
     function renderAnnualSummary() {
@@ -3435,19 +3478,27 @@
         const summary = computeAnnualSummary();
         if (!summary) return;
         const notes = [];
+        if (summary.historyPreserved) {
+          notes.push(`<div>历史收益保留截至 ${escapeHtml(summary.historyAsOf || "日期未知")} 的记录；历史资料不完整，未用当前资产或新行情重算。</div>`);
+        }
+        if (summary.incomeMissing) {
+          notes.push("<div>带入账日期的现金利息 / 股息记录缺失，年度收益尚未计入这部分收入，不代表收入为零。</div>");
+        }
 
         if (!summary.years.length) {
-          notes.push("<div>暂无股票 / ETF 交易记录，无法计算年度收益。</div>");
+          notes.push(summary.annualUnavailable
+            ? "<div>历史交易资料不完整，年度收益暂缺；已有交易及收入记录保留，待完整核验后再计算。</div>"
+            : "<div>暂无股票 / ETF 交易记录，无法计算年度收益。</div>");
         } else {
           summary.years.forEach((entry) => {
             const netFlow = entry.buys - entry.sells;
             const tile = document.createElement("div");
             tile.className = "annual-year";
             const valueLine = entry.current
-              ? `当前市值 ${formatCurrency(entry.endValue)} · 截至 ${formatChartTime(summary.latestPriceTime)}`
+              ? `${summary.historyPreserved ? "历史市值" : "当前市值"} ${formatCurrency(entry.endValue)} · 截至 ${formatChartTime(summary.latestPriceTime)}`
               : `年末市值 ${formatCurrency(entry.endValue)}`;
             tile.innerHTML = `
-              <div class="annual-year-label">${entry.year} ${entry.current ? "年初至今" : "全年"}</div>
+              <div class="annual-year-label">${entry.year} ${entry.current ? (summary.historyPreserved ? `截至 ${escapeHtml(summary.historyAsOf)}` : "年初至今") : "全年"}</div>
               <div class="annual-year-value gain ${entry.pnl < 0 ? "negative" : ""}">${formatSignedCurrency(entry.pnl)}</div>
               <div class="annual-year-sub">收益率 ${entry.returnPct === null ? "–" : formatSignedPct(entry.returnPct)} · ${netFlow >= 0 ? "净投入" : "净取出"} ${formatCurrency(Math.abs(netFlow))}</div>
               <div class="annual-year-sub">${valueLine}${summary.incomeCount ? ` · 含现金利息 / 股息 ${formatSignedCurrency(entry.income)}` : ""}</div>
@@ -3459,7 +3510,7 @@
             ? '<td class="empty-cell">–</td>'
             : `<td class="gain ${value < 0 ? "negative" : ""}">${formatSignedCurrency(value)}</td>`);
           if (summary.tickers.length) {
-            const head = summary.years.map((entry) => `<th>${entry.year}${entry.current ? " 至今" : ""}</th>`).join("");
+            const head = summary.years.map((entry) => `<th>${entry.year}${entry.current ? (summary.historyPreserved ? ` 截至 ${escapeHtml(summary.historyAsOf)}` : " 至今") : ""}</th>`).join("");
             const body = summary.tickers
               .map((row) => `<tr><td>${escapeHtml(row.ticker)}<span class="annual-name">${escapeHtml(row.name)}</span></td>${row.byYear.map(cell).join("")}${cell(row.total)}</tr>`)
               .join("");
@@ -3473,9 +3524,7 @@
           }
 
           notes.push("<div>收益 = 年末市值 − 年初市值 − 当年净投入，已含卖出实现的盈亏；收益率按资金在年内停留的时间加权（Modified Dietz），只统计股票 / ETF。</div>");
-          notes.push(summary.incomeCount
-            ? `<div>已计入 ${summary.incomeCount} 条现金利息 / 股息记录。</div>`
-            : "<div>现金利息和股息按实际入账日期计入年度收益。</div>");
+          if (summary.incomeCount) notes.push(`<div>已计入 ${summary.incomeCount} 条现金利息 / 股息记录。</div>`);
         }
 
         notesEl.innerHTML = notes.join("");
@@ -3537,32 +3586,50 @@
       const holdings = data.holdings;
       const largest = holdings[0];
       const perf = data.performance;
+      const preserved = data.historyStatus?.state === "preserved";
+      const corrected = data.basisRevision?.cumulativeGainCorrected === true;
+      const manualCapital = data.userConfirmedCapital?.source === "user-confirmed" && data.userConfirmedCapital?.updatePolicy === "explicit-user-only" ? data.userConfirmedCapital : null;
+      const historyDate = preserved ? (data.historyStatus.asOf || "日期未知") : data.asOf;
+      const snapshot = data.assetSnapshot;
+      const assetDate = snapshot
+        ? (snapshot.sourceDateStatus === "known" && snapshot.sourceAsOf ? `余额截至 ${snapshot.sourceAsOf}` : "余额来源日期未知")
+        : (data.asOf || "日期未知");
+      const retrieved = snapshot?.retrievedAt ? ` · 获取于 ${snapshot.retrievedAt}` : "";
 
-      $("meta").textContent = `${data.asOf || "latest"} · ${data.currency || "USD"} · 现金 + 股票 / ETF`;
-      $("largestHolding").textContent = `${largest.ticker} ${formatPct(largest.weight)}`;
+      $("meta").textContent = `${assetDate}${retrieved} · ${data.currency || "USD"} · 现金 + 股票 / ETF`;
+      $("largestHolding").textContent = largest ? `${largest.ticker} ${formatPct(largest.weight)}` : "–";
       $("holdingCount").textContent = `${holdings.length} 个`;
+      $("historyNotice").hidden = !preserved;
+      $("historyNotice").textContent = preserved ? `${corrected ? "累计现金利息已按用户确认更正；更正的入账日期未知，其余历史收益保留。" : `累计收益保留截至 ${historyDate} 的原值；`}历史资料不完整，年度收益暂缺，已有记录保留。当前资产快照单独展示。${corrected ? "转账是否已反映在余额中尚未确认；不据此新增现金。" : data.historyReview?.state === "awaiting_dated_evidence" ? "另有待确认日期的现金利息调整，尚未计入收益。" : ""}` : "";
+      $("performanceValueLabel").textContent = preserved ? "历史展示资产" : "当前展示资产";
+      $("totalReturnSub").textContent = corrected ? "收益更正日期未知，累计收益率暂缺" : preserved ? `基于截至 ${historyDate} 的历史本金与市值` : manualCapital ? "基于完整流水核对的收益率；手动本金单独展示" : "基于场内资金本金与当前市值计算";
 
       $("totalGain").textContent = formatSignedCurrency(perf.totalGain);
       $("totalGain").className = `metric-value gain ${perf.totalGain < 0 ? "negative" : ""}`;
-      $("totalGainSub").textContent = `本金 ${formatCurrency(perf.totalPrincipal)}，当前 ${formatCurrency(perf.totalCurrentValue)}`;
-      $("totalReturn").textContent = formatSignedPct(perf.totalReturnPct);
+      $("totalGainSub").textContent = `${preserved ? "历史本金" : manualCapital ? "流水核对本金" : "本金"} ${formatCurrency(perf.totalPrincipal)}，${preserved ? "历史原市值" : "当前"} ${formatCurrency(perf.totalCurrentValue)}`;
+      $("totalReturn").textContent = perf.totalReturnPct == null ? "–" : formatSignedPct(perf.totalReturnPct);
       $("totalReturn").className = `metric-value gain ${perf.totalReturnPct < 0 ? "negative" : ""}`;
       $("totalCurrent").textContent = formatCurrency(perf.totalCurrentValue);
-      $("totalPrincipal").textContent = formatCurrency(perf.totalPrincipal);
+      $("principalLabel").textContent = manualCapital ? "场内本金" : preserved ? "历史本金" : "本金";
+      $("totalPrincipal").textContent = formatCurrency(manualCapital ? manualCapital.principalCents / 100 : perf.totalPrincipal);
+      $("principalNote").hidden = !manualCapital;
+      $("principalNote").textContent = manualCapital ? "用户确认 · 生效日期未知 · 仅由用户更新" : "";
       $("gainSourceCount").textContent = `${perf.items.length} 类`;
-      $("perfDate").textContent = data.asOf || "latest";
+      $("perfDate").textContent = corrected ? "收益更正日期未知" : historyDate || "日期未知";
       renderHero(data, perf);
     }
 
     function renderHero(data, perf) {
-      const current = finiteOrNull(perf.totalCurrentValue) ?? data.equityValue;
+      const preserved = data.historyStatus?.state === "preserved";
+      const current = preserved || data.assetSnapshot ? data.equityValue : finiteOrNull(perf.totalCurrentValue) ?? data.equityValue;
       $("heroValue").textContent = formatCurrency(current);
       const gain = finiteOrNull(perf.totalGain);
-      const pct = finiteOrNull(perf.totalReturnPct);
+      const pct = perf.totalReturnPct == null ? null : finiteOrNull(perf.totalReturnPct);
       const delta = $("heroDelta");
       delta.hidden = gain === null;
       delta.classList.toggle("negative", gain !== null && gain < 0);
       setText("heroDeltaValue", gain === null ? "" : `${formatSignedCurrency(gain)}${pct === null ? "" : ` (${formatSignedPct(pct)})`}`);
+      setText("heroDeltaLabel", data.basisRevision?.cumulativeGainCorrected ? "累计收益 · 含未定日期更正" : preserved ? `历史累计收益 · ${data.historyStatus.asOf || "日期未知"}` : "累计收益");
     }
 
     function switchTab(tab) {

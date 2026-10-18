@@ -1,0 +1,14 @@
+# Financial plaintext and credentials must live outside this repository.
+.env
+.env.*
+*.pem
+*.key
+*.private.json
+*.decrypted.json
+*finances*snapshot*.json
+data.json
+data.plain*.json
+node_modules/
+__pycache__/
+.finances-update.lock
+.data.enc.*.tmp

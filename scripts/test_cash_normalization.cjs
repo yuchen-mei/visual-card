@@ -101,7 +101,7 @@ test("explicit deposit and sweep interest becomes one cash-interest item", () =>
   const normalized = context.normalizeCashInterestItems(performanceFixture().items);
   const cash = normalized.filter((item) => item.kind === "cash_interest");
   assert.equal(cash.length, 1);
-  assert.equal(cash[0].label, "现金利息");
+  assert.equal(cash[0].label, "现金利息/已止盈收益");
   assert.equal(cash[0].gain, 130);
   assert.equal(cash[0].gainOnly, true);
   assert.equal(cash[0].returnPct, null);
@@ -123,15 +123,60 @@ test("explicit income kinds take precedence over legacy label guesses", () => {
   for (const kind of ["realized_gain", "dividend", "other_income", "bond_interest"]) {
     assert.equal(context.isCashInterestItem({ kind, label: "利息" }), false, kind);
   }
+  const grouped=context.normalizeCashInterestItems([{kind:"realized_gain",label:"其他收益",gain:9},{kind:"cash_interest",label:"cash",gain:4}]);
+  assert.equal(grouped.length,1);
+  assert.equal(grouped[0].gain,13);
+  assert.deepEqual(plain(grouped[0].components),[{kind:"realized_gain",gain:9},{kind:"cash_interest",gain:4}]);
 });
 
-test("unattributed residual stays separate from cash interest", () => {
+test("canonical realized gains join the cash display once without reclassifying other kinds", () => {
+  const source=freezeDeep([
+    {kind:"realized_gain",label:"股票已实现收益",gain:12},
+    {kind:"cash_interest",label:"现金利息",gain:3},
+    {kind:"dividend",label:"其他收益",gain:4},
+    {kind:"unrealized_gain",label:"利息及已止盈收益",gain:9},
+    {label:"未知其他",gain:2},
+    {label:"其他收益",gain:1}
+  ]);
+  const before=JSON.stringify(source),once=context.normalizeCashInterestItems(source);
+  const group=once.find(item=>item.kind==="cash_income_group");
+  assert.equal(group.label,"现金利息/已止盈收益");
+  assert.equal(group.gain,16);
+  assert.deepEqual(plain(group.components),[
+    {kind:"realized_gain",gain:12},{kind:"cash_interest",gain:3},{kind:"other_income",gain:1}
+  ]);
+  assert.equal(once.find(item=>item.kind==="dividend").gain,4);
+  assert.equal(once.find(item=>item.kind==="unrealized_gain").gain,9);
+  assert.equal(once.find(item=>item.label==="未知其他").gain,2);
+  assert.equal(sum(once,"gain"),sum(source,"gain"));
+  assert.deepEqual(plain(context.normalizeCashInterestItems(once)),plain(once));
+  assert.equal(JSON.stringify(source),before);
+});
+
+test("existing display components retain their original metadata through repeated grouping", () => {
+  const components=freezeDeep([
+    {kind:"realized_gain",gain:7,eventKey:"synthetic-sale"},
+    {kind:"cash_interest",gain:3,eventKey:"synthetic-interest"}
+  ]);
+  const source=freezeDeep([
+    {kind:"cash_income_group",label:"现金利息/已止盈收益",gain:10,components},
+    {kind:"realized_gain",label:"股票已实现收益",gain:2}
+  ]);
+  const once=context.normalizeCashInterestItems(source);
+  assert.equal(once.length,1);
+  assert.equal(once[0].gain,12);
+  assert.deepEqual(plain(once[0].components),[...components,{kind:"realized_gain",gain:2}]);
+  assert.deepEqual(plain(context.normalizeCashInterestItems(once)),plain(once));
+});
+
+test("unattributed residual shares the display group but retains its own kind", () => {
   const perf = context.normalizePerformanceData(performanceFixture(), holdingsFixture());
   assert.equal(perf.items.find((item) => item.label === "股票 / ETF 浮盈").gain, 200);
-  assert.equal(perf.items.find((item) => item.kind === "cash_interest").gain, 130);
-  const residual = perf.items.find((item) => item.kind === "other_income");
-  assert.equal(residual.label, "其他收益");
-  assert.equal(residual.gain, 7);
+  const residual = perf.items.find((item) => item.kind === "cash_income_group");
+  assert.equal(residual.label, "现金利息/已止盈收益");
+  assert.equal(residual.gain, 137);
+  assert.equal(sum(residual.components.filter(i => i.kind === "cash_interest"), "gain"), 130);
+  assert.equal(residual.components.find(i => i.kind === "other_income").gain, 7);
   assert.equal(residual.gainOnly, true);
   assert.equal(residual.returnPct, null);
   assert.equal(sum(perf.items, "gain"), perf.totalGain);
@@ -144,7 +189,7 @@ test("stock summary selection does not overwrite an earlier realized-gain item",
   const perf = context.normalizePerformanceData(fixture, holdingsFixture());
   assert.equal(perf.items.find((item) => item.label === "股票已实现收益")?.gain, 20);
   assert.equal(perf.items.find((item) => item.label === "股票 / ETF 浮盈")?.gain, 200);
-  assert.equal(perf.items.find((item) => item.kind === "other_income")?.gain, 7);
+  assert.equal(perf.items.find((item) => item.kind === "cash_income_group")?.components.find(i=>i.kind==="other_income").gain, 7);
 });
 
 test("legacy mixed income is preserved as other income without invented allocation", () => {
@@ -157,9 +202,12 @@ test("legacy mixed income is preserved as other income without invented allocati
     ]
   };
   const perf = context.normalizePerformanceData(source, holdingsFixture());
-  assert.equal(perf.items.length, 3);
-  assert.equal(perf.items.find((item) => item.kind === "cash_interest").gain, 50);
-  assert.equal(perf.items.find((item) => item.kind === "other_income").gain, 30);
+  assert.equal(perf.items.length, 2);
+  const group=perf.items.find((item) => item.kind === "cash_income_group");
+  assert.equal(group.gain,80);
+  assert.equal(group.components.find(i=>i.kind==="cash_interest").gain,50);
+  assert.equal(group.components.find(i=>i.kind==="other_income").gain,30);
+  assert.equal(group.components.some(i=>i.kind==="realized_gain"),false);
   assert.equal(sum(perf.items, "gain"), source.totalGain);
 });
 
@@ -167,8 +215,10 @@ test("negative residual is retained and is not reclassified as negative cash int
   const source = performanceFixture();
   source.totalGain = 345;
   const perf = context.normalizePerformanceData(source, holdingsFixture());
-  assert.equal(perf.items.find((item) => item.kind === "other_income").gain, -10);
-  assert.equal(perf.items.find((item) => item.kind === "cash_interest").gain, 130);
+  const group=perf.items.find((item) => item.kind === "cash_income_group");
+  assert.equal(group.gain,120);
+  assert.equal(group.components.find(i=>i.kind==="other_income").gain,-10);
+  assert.equal(sum(group.components.filter(i=>i.kind==="cash_interest"),"gain"),130);
   assert.equal(sum(perf.items, "gain"), source.totalGain);
 });
 

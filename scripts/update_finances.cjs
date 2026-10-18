@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const vm = require("node:vm");
+const {applyTradeUpdates} = require("./finances_trades.cjs");
 const ROOT = path.resolve(__dirname, "..");
 const DAY = 86400000;
 class ValidationError extends Error {}
@@ -326,11 +327,12 @@ function buildPayload(snapshot, previous, {now = Date.now(), market, html, polic
 // an undated interest adjustment. This mode retains the original history verbatim.
 function freezeHistory(previous) {
   requireThat(previous && Array.isArray(previous.holdings) && previous.performance,"LEGACY_HISTORY_REQUIRED");
-  const historyDate=(previous.historyStatus?.state === "preserved" ? previous.historyStatus.asOf : previous.asOf)||null;
+  const retainedHistory = ["preserved", "current-trades"].includes(previous.historyStatus?.state);
+  const historyDate=(retainedHistory ? previous.historyStatus.asOf : previous.asOf)||null;
   if(historyDate!==null)date(historyDate);
-  const historySnapshot=previous.historyStatus?.state === "preserved" && previous.historySnapshot ? clone(previous.historySnapshot) : {asOf:historyDate,holdings:clone(previous.holdings),performance:clone(previous.performance),...(previous.trading!==undefined?{trading:clone(previous.trading)}:{}),...(previous.income!==undefined?{income:clone(previous.income)}:{})};
+  const historySnapshot=retainedHistory && previous.historySnapshot ? clone(previous.historySnapshot) : {asOf:historyDate,holdings:clone(previous.holdings),performance:clone(previous.performance),...(previous.trading!==undefined?{trading:clone(previous.trading)}:{}),...(previous.income!==undefined?{income:clone(previous.income)}:{})};
   const historyStatus={...clone(previous.historyStatus||{}),state:"preserved",asOf:historyDate};
-  if(previous.historyStatus?.state !== "preserved" && previous.historyStatus?.reason !== "incomplete_history")historyStatus.reason="history_not_revalidated";
+  if(!retainedHistory && previous.historyStatus?.reason !== "incomplete_history")historyStatus.reason="history_not_revalidated";
   return {...clone(previous),historyStatus,historySnapshot};
 }
 function attachHistoricalReview(next, review, {html,policy}) {
@@ -380,18 +382,12 @@ function applyUserConfirmedReturnMethod(next, previous, snapshot, {html} = {}) {
   const brokerage = snapshot.accounts.filter(a => a.type === "brokerage");
   requireThat(brokerage.length > 0, "RETURN_METHOD_BROKERAGE_MISSING");
   const providerCash = cents(sum(brokerage.map(a => a.cashCents)));
-  // A balance difference alone cannot prove that this particular transfer posted.
-  // Reconcile it against source evidence and revise the encrypted state before
-  // continuing; never silently retain or remove a possibly duplicated supplement.
-  if (supplement > 0) same(providerCash, method.providerCashCents, "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW");
   requireThat(snapshot.positions.every(p => Number.isSafeInteger(p.costBasisCents) && p.costBasisCents >= 0), "RETURN_METHOD_COST_BASIS_REQUIRED");
   const value = cents(sum(snapshot.positions.map(p => p.valueCents)));
   const cost = cents(sum(snapshot.positions.map(p => p.costBasisCents)));
   const ui = browserContract(html);
   if (supplement > 0) {
-    // A posted transfer followed by a purchase can leave cash unchanged. Do not
-    // carry the supplement across a changed position inventory or cost basis.
-    same(cost, cents(method.holdingCostBasisCents), "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW");
+    const review = "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW";
     const oldShares = new Map(), newShares = new Map();
     for (const h of previous.assetHoldings || previous.holdings || []) {
       if (ui.isCashHolding(h)) continue;
@@ -400,8 +396,40 @@ function applyUserConfirmedReturnMethod(next, previous, snapshot, {html} = {}) {
       oldShares.set(ticker, (oldShares.get(ticker) || 0) + h.shares);
     }
     for (const p of snapshot.positions) newShares.set(p.ticker, (newShares.get(p.ticker) || 0) + p.shares);
-    same([...oldShares.keys()].sort(), [...newShares.keys()].sort(), "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW");
-    for (const [ticker, shares] of newShares) close(shares, oldShares.get(ticker), "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW");
+    const previousIds = new Set((previous.tradeSync?.transactions || []).map(t => t.id));
+    const additions = previous.tradeSync && next.tradeSync
+      ? next.tradeSync.transactions.filter(t => !previousIds.has(t.id)) : [];
+    if (additions.length) {
+      // The caller has merged and verified the entire fixed source window. Only
+      // its newly accepted IDs can explain this snapshot's balance movement.
+      requireThat(Array.isArray(snapshot.tradeUpdates?.rows), review);
+      same(next.tradeSync.baselineCutoff, previous.tradeSync.baselineCutoff, review);
+      const expected = new Map(additions.map(t => [t.id, t.digest]));
+      const seen = new Set(), shareChanges = new Map();
+      let spent = 0;
+      for (const row of snapshot.tradeUpdates.rows) {
+        const id = hash(JSON.stringify([row.accountId, row.sourceId]));
+        if (!expected.has(id)) continue;
+        requireThat(!seen.has(id) && row.feesCents === 0 && Number.isSafeInteger(row.amountCents)
+          && ((row.side === "buy" && row.amountCents > 0) || (row.side === "sell" && row.amountCents < 0)), review);
+        const economics = {date: row.date, ticker: row.ticker, side: row.side, shares: row.shares,
+          price: row.price, amountCents: row.amountCents, feesCents: row.feesCents};
+        same(hash(JSON.stringify(economics)), expected.get(id), review);
+        seen.add(id); spent = cents(spent + row.amountCents);
+        shareChanges.set(row.ticker, (shareChanges.get(row.ticker) || 0) + (row.side === "buy" ? row.shares : -row.shares));
+      }
+      same(seen.size, expected.size, review);
+      same(providerCash - method.providerCashCents, -spent, review);
+      for (const ticker of new Set([...oldShares.keys(), ...newShares.keys(), ...shareChanges.keys()]))
+        close((newShares.get(ticker) || 0) - (oldShares.get(ticker) || 0), shareChanges.get(ticker) || 0, review);
+    } else {
+      // Bootstrap and runs without new trades cannot distinguish a deposit from
+      // settlement. Retain the strict original cash/cost/inventory protection.
+      same(providerCash, method.providerCashCents, review);
+      same(cost, cents(method.holdingCostBasisCents), review);
+      same([...oldShares.keys()].sort(), [...newShares.keys()].sort(), review);
+      for (const [ticker, shares] of newShares) close(shares, oldShares.get(ticker), review);
+    }
   }
   const buyingPower = cents(providerCash + supplement);
   const principal = cents(method.totalPrincipalCents - buyingPower);
@@ -556,6 +584,8 @@ function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy} 
   const next={...freezeHistory(previous),holdings,assetSnapshot:{retrievedAt:snapshot.fetchedAt,sourceAsOf:known?sourceDates[0]:null,sourceDateStatus:known?"known":"unknown"},assetAudit:{version:1,accountSourceDates:privateDates.sort((a,b)=>a.account.localeCompare(b.account)),positionPriceDates:positions.map(p=>({position:hash(`${p.accountId}:${p.ticker}`),priceAsOf:p.priceAsOf||null})).sort((a,b)=>a.position.localeCompare(b.position))}};
   if(snapshot.historicalInterestReview!==undefined)attachHistoricalReview(next,snapshot.historicalInterestReview,{html,policy});
   if(previous.userConfirmedCapital)validateManualCapital(previous.userConfirmedCapital);
+  try { applyTradeUpdates(next, previous, snapshot); }
+  catch (error) { throw new ValidationError(/^[A-Z][A-Z_0-9]{0,79}$/.test(error.code) ? error.code : "TRADE_UPDATE_INVALID"); }
   applyUserConfirmedReturnMethod(next, previous, snapshot, {html});
   // Verify through the actual production display path, with old history frozen.
   const ui=browserContract(html), normalized=ui.normalizeData(clone(next));
@@ -567,7 +597,9 @@ function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy} 
     for(const key of ["totalGain","totalPrincipal","totalCurrentValue","totalReturnPct"])same(normalized.performance[key],previous.performance[key],"PRESERVED_PERFORMANCE_CHANGED");
     same(next.performance,previous.performance,"PRESERVED_HISTORY_CHANGED");
   }
-  for(const key of ["trading","income"])same(next[key],previous[key],"PRESERVED_HISTORY_CHANGED");
+  same(next.income,previous.income,"PRESERVED_HISTORY_CHANGED");
+  if (snapshot.tradeUpdates === undefined) same(next.trading,previous.trading,"PRESERVED_HISTORY_CHANGED");
+  else same(normalized.trading.reduce((n,row)=>n+row.orders.length,0),Object.values(next.trading).reduce((n,row)=>n+(row.orders||[]).length,0),"BROWSER_TRADE_COUNT_MISMATCH");
   return next;
 }
 

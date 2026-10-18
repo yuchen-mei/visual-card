@@ -219,4 +219,105 @@ function normalizeAssetSnapshot({ linkedAccounts, holdingsResponses, fetchedAt, 
   };
 }
 
-if (typeof module !== "undefined" && module.exports) module.exports = { FinancesSourceError, normalizeAssetSnapshot, unwrapFinancesResponse };
+// The caller supplies a policy containing only independently verified investment
+// accounts. Exhausting these unfiltered query pages is not inception coverage.
+// Provider `date` is its settlement date; order-initiation timestamps do not fill
+// missing dates or establish a current source timestamp.
+function normalizeTradeUpdates({ transactionResponses, policy, fetchedAt } = {}) {
+  const retrieved = sourceTimestamp(fetchedAt);
+  sourceRequire(Array.isArray(policy?.accountIds) && policy.accountIds.length > 0, "SOURCE_APPROVED_POLICY_REQUIRED");
+  const approved = new Set(policy.accountIds.map(sourceId));
+  sourceRequire(approved.size === policy.accountIds.length, "SOURCE_DUPLICATE_POLICY_ACCOUNT");
+  sourceRequire(Array.isArray(transactionResponses), "SOURCE_TRANSACTION_RESPONSES_REQUIRED");
+  const pages = new Map();
+  const queryKeys = new Set(["query_type", "account_id", "cursor", "limit", "order_by_field", "order_by_direction", "select_fields"]);
+  const requiredFields = ["account_id", "investment_transaction_id", "security_id", "date", "ticker_symbol", "is_cash_equivalent", "quantity", "price", "amount", "fees", "type", "subtype", "iso_currency_code"];
+  const allowedFields = new Set([...requiredFields, "transaction_datetime", "cancel_transaction_id", "unofficial_currency_code"]);
+  const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+  for (const batch of transactionResponses) {
+    sourceRequire(Array.isArray(batch?.queries) && batch.queries.length > 0, "SOURCE_QUERY_CONTEXT_REQUIRED");
+    const response = unwrapFinancesResponse(batch.response, "results");
+    sourceRequire(Array.isArray(response.results) && response.results.length === batch.queries.length, "SOURCE_QUERY_RESULTS_MISSING");
+    const indices = new Set();
+    for (const result of response.results) {
+      sourceRequire(Number.isSafeInteger(result?.index) && result.index >= 0 && result.index < batch.queries.length && !indices.has(result.index), "SOURCE_QUERY_INDEX_INVALID");
+      indices.add(result.index);
+      const query = batch.queries[result.index];
+      sourceRequire(query && typeof query === "object" && !Array.isArray(query) && Object.keys(query).every(key => queryKeys.has(key)) && query.query_type === "investment_transactions", "SOURCE_FILTERED_OR_UNSUPPORTED_QUERY");
+      const accountId = sourceId(query.account_id);
+      sourceRequire(approved.has(accountId), "SOURCE_QUERY_ACCOUNT_MISMATCH");
+      sourceRequire(Number.isSafeInteger(query.limit) && query.limit >= 1 && query.limit <= 100, "SOURCE_INVALID_QUERY_LIMIT");
+      sourceRequire(query.order_by_field === "date" && query.order_by_direction === "asc", "SOURCE_INVALID_QUERY_ORDER");
+      if (query.select_fields !== undefined && query.select_fields !== null) {
+        sourceRequire(Array.isArray(query.select_fields) && requiredFields.every(field => query.select_fields.includes(field)) && query.select_fields.every(field => allowedFields.has(field)) && new Set(query.select_fields).size === query.select_fields.length, "SOURCE_INCOMPLETE_PROJECTION");
+      }
+      sourceRequire(result.query_type === "investment_transactions" && result.is_error === false, "SOURCE_TRANSACTIONS_QUERY_FAILED");
+      const page = result.result;
+      sourceRequire(page && Array.isArray(page.items) && typeof page.has_more === "boolean" && (page.next_cursor === null || typeof page.next_cursor === "string"), "SOURCE_TRANSACTIONS_PAGE_SHAPE");
+      sourceRequire(page.items.length <= query.limit, "SOURCE_PAGE_LIMIT_MISMATCH");
+      sourceRequire(page.has_more ? typeof page.next_cursor === "string" && page.next_cursor.length > 0 : page.next_cursor === null, "SOURCE_CURSOR_STATE_INVALID");
+      const cursor = query.cursor ?? null;
+      sourceRequire(cursor === null || (typeof cursor === "string" && cursor.length > 0), "SOURCE_CURSOR_STATE_INVALID");
+      const base = { ...query }; delete base.cursor;
+      const entries = pages.get(accountId) || new Map();
+      sourceRequire(!entries.has(cursor), "SOURCE_DUPLICATE_PAGE");
+      entries.set(cursor, { page, signature: JSON.stringify(canonical(base)) }); pages.set(accountId, entries);
+    }
+  }
+  const rows = [], transactionIds = new Set();
+  const blockedKinds = new Set(["cancel", "cancelled", "canceled", "cancellation", "reversal", "corporate_action", "corporate action", "split", "stock_split", "stock split", "stocksplit", "reverse_split", "reverse split", "merger", "spinoff", "spin_off", "spin-off", "reorganization"]);
+  // Exact Finances enum spelling; reinvestments and security-changing actions
+  // deliberately remain unsupported instead of disappearing as cash activity.
+  const ignoredSubtypes = {
+    cash: new Set(["dividend", "qualified dividend", "non-qualified dividend", "interest", "interest receivable", "deposit", "withdrawal", "contribution", "distribution", "return of principal", "loan payment", "long-term capital gain", "short-term capital gain", "unqualified gain", "tax", "tax withheld", "non-resident tax"]),
+    fee: new Set(["account fee", "fund fee", "legal fee", "management fee", "margin expense", "miscellaneous fee", "transfer fee", "trust fee"]),
+    transfer: new Set(["transfer"])
+  };
+  for (const accountId of [...approved].sort()) {
+    const entries = pages.get(accountId);
+    sourceRequire(entries?.has(null), "SOURCE_TRANSACTIONS_FIRST_PAGE_MISSING");
+    const visited = new Set(), signature = entries.get(null).signature;
+    let cursor = null;
+    while (true) {
+      sourceRequire(!visited.has(cursor), "SOURCE_CURSOR_CYCLE"); visited.add(cursor);
+      const entry = entries.get(cursor);
+      sourceRequire(entry && entry.signature === signature, "SOURCE_PAGE_MISSING_OR_QUERY_CHANGED");
+      for (const row of entry.page.items) {
+        sourceRequire(row?.account_id === accountId, "SOURCE_TRANSACTION_ACCOUNT_MISMATCH");
+        const id = sourceId(row.investment_transaction_id);
+        sourceRequire(!transactionIds.has(id), "SOURCE_DUPLICATE_TRANSACTION"); transactionIds.add(id);
+        sourceRequire(typeof row.type === "string" && typeof row.subtype === "string", "SOURCE_TRANSACTION_KIND_MISSING");
+        sourceRequire(!blockedKinds.has(row.type) && !blockedKinds.has(row.subtype) && (row.cancel_transaction_id === undefined || row.cancel_transaction_id === null), "SOURCE_CANCEL_OR_CORPORATE_ACTION_UNSUPPORTED");
+        const side = row.type;
+        if (Object.prototype.hasOwnProperty.call(ignoredSubtypes, side)) {
+          sourceRequire(ignoredSubtypes[side].has(row.subtype), "SOURCE_UNSUPPORTED_TRANSACTION_KIND");
+          if (side === "transfer") {
+            sourceRequire(row.quantity === undefined || row.quantity === null || (typeof row.quantity === "number" && Number.isFinite(row.quantity)), "SOURCE_INVALID_QUANTITY");
+            const securityEvidence = row.is_cash_equivalent === false || (row.is_cash_equivalent !== true && ((typeof row.security_id === "string" && row.security_id.length > 0) || (typeof row.ticker_symbol === "string" && row.ticker_symbol.length > 0)));
+            sourceRequire(!(row.quantity && securityEvidence), "SOURCE_SECURITY_TRANSFER_UNSUPPORTED");
+          }
+          continue;
+        }
+        sourceRequire((side === "buy" || side === "sell") && row.subtype === side, "SOURCE_UNSUPPORTED_TRADE_KIND");
+        sourceRequire(row.is_cash_equivalent === false, "SOURCE_TRADE_CASH_CLASSIFICATION_INVALID");
+        sourceId(row.security_id);
+        sourceCurrency(row);
+        const date = sourceDate(row.date);
+        sourceRequire(typeof row.ticker_symbol === "string" && /^[A-Z][A-Z0-9.-]{0,14}$/.test(row.ticker_symbol) && !["CASH", "CD"].includes(row.ticker_symbol), "SOURCE_INVALID_TICKER");
+        sourceRequire(typeof row.quantity === "number" && Number.isFinite(row.quantity) && (side === "buy" ? row.quantity > 0 : row.quantity < 0), "SOURCE_TRADE_QUANTITY_SIGN_INVALID");
+        sourceRequire(typeof row.price === "number" && Number.isFinite(row.price) && row.price > 0, "SOURCE_INVALID_PRICE");
+        sourceRequire(typeof row.amount === "number" && Number.isFinite(row.amount) && (side === "buy" ? row.amount > 0 : row.amount < 0), "SOURCE_TRADE_AMOUNT_SIGN_INVALID");
+        const magnitude = sourceCents(Math.abs(row.amount));
+        sourceRequire(magnitude > 0, "SOURCE_TRADE_AMOUNT_SIGN_INVALID");
+        rows.push({ accountId, sourceId: id, date, ticker: row.ticker_symbol, side, shares: Math.abs(row.quantity), price: row.price, amountCents: side === "buy" ? magnitude : -magnitude, feesCents: sourceCents(row.fees) });
+      }
+      if (!entry.page.has_more) break;
+      cursor = entry.page.next_cursor;
+    }
+    sourceRequire(visited.size === entries.size, "SOURCE_ORPHAN_TRANSACTIONS_PAGE");
+  }
+  rows.sort((a, b) => a.accountId.localeCompare(b.accountId) || a.date.localeCompare(b.date) || a.sourceId.localeCompare(b.sourceId));
+  return { version: 1, source: "Finances", fetchedAt: retrieved, sourceAsOf: null, dateBasis: "provider-settlement-date", allPagesFetched: true, queriedFrom: null, historyFromInception: false, accountIds: [...approved].sort(), rows };
+}
+
+if (typeof module !== "undefined" && module.exports) module.exports = { FinancesSourceError, normalizeAssetSnapshot, normalizeTradeUpdates, unwrapFinancesResponse };

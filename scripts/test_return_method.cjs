@@ -156,6 +156,93 @@ test("a pending transfer followed by a purchase cannot hide behind unchanged cas
   assert.throws(() => build(s), {message: "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW"});
 });
 
+function attachTrades(s, rows = []) {
+  s.tradeUpdates = {version: 1, accountIds: [policy.accountIds[0]], rows: copy(rows),
+    dateBasis: "provider-settlement-date", sourceAsOf: null, queriedFrom: null, allPagesFetched: true};
+  return s;
+}
+function tradeBaseline(principalCents = 100000) {
+  const old = previous();
+  old.userConfirmedCapital.principalCents = principalCents;
+  old.userConfirmedReturnMethod.totalPrincipalCents = principalCents;
+  old.historySnapshot = {asOf: "2025-01-02", holdings: copy(old.holdings),
+    performance: copy(old.performance), trading: copy(old.trading), income: copy(old.income)};
+  old.historyStatus = {state: "preserved", asOf: "2025-01-02"};
+  return build(attachTrades(snapshot()), old);
+}
+function sourceTrade(extra = {}) {
+  return {accountId: policy.accountIds[0], sourceId: "synthetic-return-buy", date: "2026-10-17",
+    ticker: "DEMO", side: "buy", shares: 2, price: 90, amountCents: 18000, feesCents: 0, ...extra};
+}
+function tradeSnapshot(row) {
+  const s = attachTrades(snapshot(), [row]);
+  changeCash(s, 0, -row.amountCents);
+  if (row.ticker === "DEMO") {
+    const signedShares = row.side === "buy" ? row.shares : -row.shares;
+    s.positions[0].shares += signedShares;
+    s.positions[0].costBasisCents += row.side === "buy" ? row.amountCents : signedShares * 8000;
+    changeValue(s, signedShares * 9000);
+    if (s.positions[0].shares === 0) s.positions = [];
+  } else {
+    s.positions.push({accountId: policy.accountIds[0], ticker: row.ticker, type: "stock",
+      shares: row.shares, valueCents: row.amountCents, costBasisCents: row.amountCents, priceAsOf: "2026-10-17"});
+    s.accounts[0].securitiesCents += row.amountCents; s.accounts[0].totalCents += row.amountCents;
+    s.reconciliation.totalValueCents += row.amountCents;
+  }
+  return s;
+}
+
+test("established trade sync permits exact zero-fee buys, partial sells and new positions while supplement stays fixed", () => {
+  const old = tradeBaseline();
+  for (const row of [sourceTrade(), sourceTrade({sourceId: "synthetic-return-sell", side: "sell", amountCents: -18000}),
+    sourceTrade({sourceId: "synthetic-new-position", ticker: "NEW", shares: 1, price: 25, amountCents: 2500})]) {
+    const s = tradeSnapshot(row), data = build(s, old);
+    assert.equal(data.performance.totalGain, old.performance.totalGain);
+    assert.equal(data.userConfirmedReturnMethod.providerCashCents, s.accounts[0].cashCents);
+    assert.equal(data.userConfirmedReturnMethod.buyingPowerSupplementCents, old.userConfirmedReturnMethod.buyingPowerSupplementCents);
+    assert.equal(data.userConfirmedReturnMethod.supplementState, old.userConfirmedReturnMethod.supplementState);
+    assert.deepEqual(data.userConfirmedCapital, old.userConfirmedCapital);
+    assert.deepEqual(data.historySnapshot, old.historySnapshot); assert.deepEqual(data.income, old.income);
+    assert.equal(data.asOf, old.asOf); assert.equal(data.tradeSync.transactions.length, 1);
+    assert.deepEqual(build(s, data), data);
+  }
+});
+
+test("a verified sale can close a position without dropping its real orders", () => {
+  const old = tradeBaseline(200000), row = sourceTrade({sourceId: "synthetic-close-position", side: "sell", shares: 10, amountCents: -90000});
+  const data = build(tradeSnapshot(row), old);
+  assert.equal(data.holdings.filter(h => h.type !== "cash").length, 0);
+  assert.equal(data.trading.DEMO.orders.length, 2);
+  assert.equal(data.trading.DEMO.orders[1].side, "sell");
+  assert.equal(data.performance.totalGain, old.performance.totalGain);
+  assert.equal(data.userConfirmedReturnMethod.holdingCostBasisCents, 0);
+});
+
+test("new trades cannot conceal a transfer, fee, missing execution or wrong position change", () => {
+  const old = tradeBaseline();
+  for (const change of [s => changeCash(s, 0, 1), s => {s.tradeUpdates.rows[0].feesCents = 1;},
+    s => {s.positions[0].shares += 1;}, s => {s.tradeUpdates.rows = [];}]) {
+    const s = tradeSnapshot(sourceTrade()); change(s);
+    assert.throws(() => build(s, old), {message: "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW"});
+  }
+  const noNew = attachTrades(snapshot()); changeCash(noNew, 0, 1);
+  assert.throws(() => build(noNew, old), {message: "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW"});
+});
+
+test("first bootstrap cannot relax pending-supplement guards even with real window orders", () => {
+  const old = tradeBaseline(); delete old.tradeSync;
+  assert.throws(() => build(tradeSnapshot(sourceTrade()), old), {message: "BUYING_POWER_SUPPLEMENT_REQUIRES_REVIEW"});
+});
+
+test("repeated verified trades are a no-op before encryption", async () => {
+  const s = tradeSnapshot(sourceTrade()), data = build(s, tradeBaseline());
+  const bytes = Buffer.from(JSON.stringify(U.encrypt(data, password)));
+  s.previousCiphertextSha256 = U.hash(bytes);
+  const result = await U.prepareUpdate({snapshot: s, existingBytes: bytes, password, html, now, policy,
+    encryptFn() { assert.fail("identical trades must not be reencrypted"); }});
+  assert.equal(result.status, "unchanged");
+});
+
 test("confirmed return requires current position cost rather than inferring missing cost", () => {
   for (const missing of [undefined, null]) {
     const s = snapshot(); s.positions[0].costBasisCents = missing;

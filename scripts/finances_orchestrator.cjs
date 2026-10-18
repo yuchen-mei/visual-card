@@ -28,7 +28,7 @@
    requireThat(typeof request.operationId==="string"&&/^[A-Za-z0-9][A-Za-z0-9:._-]{0,119}$/.test(request.operationId),"E_OPERATION_ID");
    requireThat(request.publish===undefined||typeof request.publish==="boolean","E_PUBLISH_FLAG");
    for(const name of ["hash","now"])requireThat(typeof deps?.[name]==="function","E_DEPENDENCIES");
-   requireThat(typeof deps?.finances?.getLinkedAccounts==="function"&&typeof deps.finances.query==="function"&&typeof deps.local?.prepare==="function"&&typeof deps.source?.normalizeAssetSnapshot==="function"&&typeof deps.publisher?.readBaseline==="function"&&typeof deps.publisher.publishData==="function","E_DEPENDENCIES");
+   requireThat(typeof deps?.finances?.getLinkedAccounts==="function"&&typeof deps.finances.query==="function"&&typeof deps.local?.prepare==="function"&&typeof deps.source?.normalizeAssetSnapshot==="function"&&typeof deps.source?.normalizeTradeUpdates==="function"&&typeof deps.publisher?.readBaseline==="function"&&typeof deps.publisher.publishData==="function","E_DEPENDENCIES");
    phase="github_read";
    const baseline=copy(await deps.publisher.readBaseline(deps.publication));
    phase="finances_read";
@@ -52,6 +52,24 @@
    }
    const policy={accountIds:accounts.map(a=>a.account_id)};
    const snapshot=deps.source.normalizeAssetSnapshot({linkedAccounts:linked,holdingsResponses,fetchedAt:new Date(deps.now()).toISOString(),baselineSha256:baseline.sha256,policy});
+   const transactionResponses=[];
+   const investmentAccounts=accounts.filter(a=>a.type==="investment");
+   for(const account of investmentAccounts){
+    let cursor;const seen=new Set();
+    for(let page=0;page<500;page++){
+     const query={query_type:"investment_transactions",account_id:account.account_id,limit:20,order_by_field:"date",order_by_direction:"asc",...(cursor?{cursor}:{})};
+     const response=copy(await deps.finances.query({queries:[copy(query)]}));
+     transactionResponses.push({queries:[copy(query)],response});
+     const results=deps.source.unwrapFinancesResponse(response,"results").results;
+     requireThat(results.length===1&&results[0].index===0&&!results[0].is_error,"E_TRANSACTIONS_QUERY");
+     const payload=results[0].result;
+     if(payload?.has_more===false){requireThat(payload.next_cursor===null||payload.next_cursor===undefined,"E_PAGINATION");cursor=null;break;}
+     requireThat(payload?.has_more===true&&typeof payload.next_cursor==="string"&&payload.next_cursor.length>0&&!seen.has(payload.next_cursor),"E_PAGINATION");
+     seen.add(payload.next_cursor);cursor=payload.next_cursor;
+    }
+    requireThat(cursor===null,"E_PAGINATION_LIMIT");
+   }
+   snapshot.tradeUpdates=deps.source.normalizeTradeUpdates({transactionResponses,policy:{accountIds:investmentAccounts.map(a=>a.account_id)},fetchedAt:snapshot.fetchedAt});
    phase="local_validation";
    const prepared=copy(await deps.local.prepare({operationId:request.operationId,baseline:copy(baseline),snapshot:copy(snapshot),policy:copy(policy)}));
    requireThat(prepared?.operationId===request.operationId&&prepared.expectedHead===baseline.head&&prepared.baselineSha256===baseline.sha256,"E_LOCAL_RECEIPT");

@@ -10,7 +10,7 @@ test("sealed source roundtrip uses Node OAEP and burns client seed pool",()=>{co
 test("transport refuses expired and mismatched sessions",()=>{const s=session(),p=packet(s);assert.throws(()=>T.seal(p,copy(s.header),{now:now+300001}));p.expectedHead="c".repeat(40);assert.throws(()=>T.seal(p,copy(s.header),{now}));});
 test("receiver is single-use including rejected inputs",()=>{const s=session(),cipher=T.seal(packet(s),copy(s.header),{now});s.open(cipher,{now});assert.throws(()=>s.open(cipher,{now}),{message:"TRANSPORT_ALREADY_CONSUMED"});});
 test("reordered, omitted, changed and foreign chunks fail closed",()=>{for(const mutation of [b=>b.reverse(),b=>b.pop(),b=>b[0]="0".repeat(768)]){const s=session(),cipher=T.seal(packet(s),copy(s.header),{now});mutation(cipher.blocks);assert.throws(()=>s.open(cipher,{now}));}});
-test("oversized source packet is rejected before sealing",()=>{const s=session(),p=packet(s);p.snapshot.text="x".repeat(32769);assert.throws(()=>T.seal(p,copy(s.header),{now}));});
+test("oversized source packet is rejected before sealing",()=>{const s=session(),p=packet(s);p.snapshot.text="x".repeat(131073);assert.throws(()=>T.seal(p,copy(s.header),{now}));});
 function fixture(){
  const old={asOf:"2026-10-09",currency:"USD",holdings:[{ticker:"CASH",type:"cash",value:100}],performance:{totalCurrentValue:100,totalPrincipal:90,totalGain:10,totalReturnPct:100/9,items:[{label:"cash interest",kind:"cash_interest",gain:10}]}};
  const password="synthetic-bridge-only",bytes=Buffer.from(JSON.stringify(U.encrypt(old,password)));

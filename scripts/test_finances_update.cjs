@@ -205,6 +205,7 @@ test("CLI synthetic dry-run/write/no-op/failure preserves encrypted bytes correc
   const repo=path.join(dir,"repo"),input=path.join(dir,"snapshot.private.json"),policyFile=path.join(dir,"policy.private.json"),secret=path.join(dir,"password");
   fs.mkdirSync(path.join(repo,"scripts"),{recursive:true});
   fs.copyFileSync(path.join(__dirname,"update_finances.cjs"),path.join(repo,"scripts","update_finances.cjs"));
+  fs.copyFileSync(path.join(__dirname,"finances_trades.cjs"),path.join(repo,"scripts","finances_trades.cjs"));
   fs.writeFileSync(path.join(repo,"index.html"),html);
   fs.writeFileSync(path.join(repo,"market.prices.json"),JSON.stringify({prices:fixture().prices}));
   fs.writeFileSync(path.join(dir,"clock.cjs"),`Date.now = () => ${now};`);

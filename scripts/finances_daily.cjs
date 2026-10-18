@@ -2,7 +2,7 @@
 "use strict";
 
 // Local one-shot candidate builder. Deliberately has no publication or scheduler
-// activation option. The native launcher must pin this complete program and HTML.
+// activation option. Supports an existing private password file or inherited FD.
 const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto"),readline=require("node:readline");
 const U=require("./update_finances.cjs");
 const ROOT=path.resolve(__dirname,"..");
@@ -12,15 +12,42 @@ function privateDirectory(dir){
  const real=fs.realpathSync(dir),st=fs.statSync(real);
  check(real!==ROOT&&!real.startsWith(ROOT+path.sep)&&st.isDirectory()&&st.uid===process.getuid()&&(st.mode&0o077)===0,"PRIVATE_OUTPUT_DIRECTORY_REQUIRED");return real;
 }
+function readPasswordFile(filename){
+ let fd,buffer;
+ try{
+  check(typeof filename==="string"&&filename.length>0,"E_PASSWORD_FILE");
+  const requested=path.resolve(filename),parent=fs.realpathSync(path.dirname(requested)),root=fs.realpathSync(ROOT);
+  check(parent!==root&&!parent.startsWith(root+path.sep),"E_PASSWORD_FILE");
+  const parentStat=fs.lstatSync(path.dirname(requested)),parentRealStat=fs.lstatSync(parent);
+  const validParent=st=>st.isDirectory()&&!st.isSymbolicLink()&&st.uid===process.getuid()&&(st.mode&0o7777)===0o700;
+  check(validParent(parentStat)&&validParent(parentRealStat)&&parentStat.dev===parentRealStat.dev&&parentStat.ino===parentRealStat.ino,"E_PASSWORD_FILE");
+  const target=path.join(parent,path.basename(requested)),before=fs.lstatSync(target);
+  const valid=st=>st.isFile()&&!st.isSymbolicLink()&&st.nlink===1&&st.uid===process.getuid()&&(st.mode&0o7777)===0o600&&st.size>0&&st.size<=4096;
+  const same=(a,b)=>["dev","ino","uid","mode","nlink","size","mtimeMs","ctimeMs"].every(key=>a[key]===b[key]);
+  check(valid(before)&&Number.isInteger(fs.constants.O_NOFOLLOW)&&Number.isInteger(fs.constants.O_NONBLOCK),"E_PASSWORD_FILE");
+  fd=fs.openSync(target,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK);
+  const opened=fs.fstatSync(fd);check(valid(opened)&&same(opened,before),"E_PASSWORD_FILE");
+  // Bound the read even if an unexpected writer grows the file after open.
+  buffer=Buffer.alloc(4097);let length=0;
+  while(length<buffer.length){const count=fs.readSync(fd,buffer,length,buffer.length-length,null);if(count===0)break;length+=count;}
+  const after=fs.fstatSync(fd),named=fs.lstatSync(target),parentAfter=fs.lstatSync(parent),requestedParentAfter=fs.lstatSync(path.dirname(requested));
+  check(length===before.size&&valid(after)&&valid(named)&&same(before,after)&&same(before,named)
+   &&validParent(parentAfter)&&validParent(requestedParentAfter)
+   &&parentAfter.dev===parentStat.dev&&parentAfter.ino===parentStat.ino
+   &&requestedParentAfter.dev===parentStat.dev&&requestedParentAfter.ino===parentStat.ino,"E_PASSWORD_FILE");
+  return Buffer.from(buffer.subarray(0,length));
+ }catch{throw new U.ValidationError("E_PASSWORD_FILE");}
+ finally{if(buffer)buffer.fill(0);if(fd!==undefined)fs.closeSync(fd);}
+}
 function createSession({expectedHead,baselineSha256,now=Date.now()}){
  check(/^[a-f0-9]{40}$/.test(expectedHead)&&/^[a-f0-9]{64}$/.test(baselineSha256),"INVALID_BASELINE_BINDING");
  const keys=crypto.generateKeyPairSync("rsa",{modulusLength:3072}),sessionId=crypto.randomUUID(),expiresAt=new Date(now+300000).toISOString();
  let consumed=false;
- const header={protocol:PROTOCOL,sessionId,expectedHead,baselineSha256,expiresAt,publicKey:keys.publicKey.export({format:"jwk"}),seeds:Array.from({length:128},()=>crypto.randomBytes(32).toString("hex"))};
+ const header={protocol:PROTOCOL,sessionId,expectedHead,baselineSha256,expiresAt,publicKey:keys.publicKey.export({format:"jwk"}),seeds:Array.from({length:512},()=>crypto.randomBytes(32).toString("hex"))};
  function open(sealed,{now=Date.now()}={}){
   check(!consumed,"TRANSPORT_ALREADY_CONSUMED");consumed=true;
   check(now<=Date.parse(expiresAt)&&sealed?.protocol===PROTOCOL&&sealed.sessionId===sessionId,"TRANSPORT_SESSION_MISMATCH");
-  check(Array.isArray(sealed.blocks)&&sealed.blocks.length>0&&sealed.blocks.length<=128,"INVALID_SEALED_INPUT");
+  check(Array.isArray(sealed.blocks)&&sealed.blocks.length>0&&sealed.blocks.length<=512,"INVALID_SEALED_INPUT");
   const chunks=[];let digest;
   try{
    for(let i=0;i<sealed.blocks.length;i++){
@@ -30,7 +57,7 @@ function createSession({expectedHead,baselineSha256,now=Date.now()}){
     if(!digest)digest=Buffer.from(plain.subarray(0,32));else check(digest.equals(plain.subarray(0,32)),"TRANSPORT_BLOCK_MISMATCH");
     chunks.push(Buffer.from(plain.subarray(40)));plain.fill(0);
    }
-   const bytes=Buffer.concat(chunks);check(bytes.length<=32768&&crypto.createHash("sha256").update(bytes).digest().equals(digest),"TRANSPORT_DIGEST_MISMATCH");
+   const bytes=Buffer.concat(chunks);check(bytes.length<=131072&&crypto.createHash("sha256").update(bytes).digest().equals(digest),"TRANSPORT_DIGEST_MISMATCH");
    const packet=JSON.parse(bytes.toString("utf8"));bytes.fill(0);
    check(packet.sessionId===sessionId&&packet.expectedHead===expectedHead&&packet.baselineSha256===baselineSha256,"TRANSPORT_BASELINE_MISMATCH");
    return packet;
@@ -108,21 +135,27 @@ async function prepareCandidate({packet,existingBytes,password,html,outputDirect
  }
 }
 async function main(args){
- if(args.length===1&&args[0]==="--help"){console.log("Usage: node scripts/finances_daily.cjs --serve --expected-head SHA40 --baseline ENCRYPTED_JSON --output-dir PRIVATE_DIRECTORY\nPassword: inherited VISUAL_CARD_PASSWORD_FD. Reads one sealed stdin line, writes only a validated encrypted candidate. Never publishes. Treat the entire transport header as private runtime data: never display or persist it.");return;}
- check(args.length===7&&args[0]==="--serve"&&args[1]==="--expected-head"&&args[3]==="--baseline"&&args[5]==="--output-dir","INVALID_ARGUMENTS");
+ if(args.length===1&&args[0]==="--help"){console.log("Usage: node scripts/finances_daily.cjs --serve --expected-head SHA40 --baseline ENCRYPTED_JSON --output-dir PRIVATE_DIRECTORY\nOr: node scripts/finances_daily.cjs --serve-file --expected-head SHA40 --baseline ENCRYPTED_JSON --output-dir PRIVATE_DIRECTORY --password-file PRIVATE_PASSWORD_FILE\n--serve uses inherited VISUAL_CARD_PASSWORD_FD. --serve-file requires an existing owner-only 0600 regular file outside the repository, in an owner-only 0700 directory. Reads one sealed stdin line, writes only a validated encrypted candidate. Never publishes. Treat the entire transport header as private runtime data: never display or persist it.");return;}
+ const fileMode=args[0]==="--serve-file";
+ check(((fileMode&&args.length===9&&args[7]==="--password-file")||(!fileMode&&args[0]==="--serve"&&args.length===7))&&args[1]==="--expected-head"&&args[3]==="--baseline"&&args[5]==="--output-dir","INVALID_ARGUMENTS");
  const expectedHead=args[2],baselinePath=fs.realpathSync(args[4]),outputDirectory=privateDirectory(args[6]);
  check(fs.statSync(baselinePath).isFile(),"INVALID_BASELINE_FILE");
  const existingBytes=fs.readFileSync(baselinePath);U.validateEnvelope(JSON.parse(existingBytes));
- const fd=Number(process.env.VISUAL_CARD_PASSWORD_FD);check(Number.isInteger(fd)&&fd>=3&&fd<=1024,"PASSWORD_FD_REQUIRED");
- const secret=fs.readFileSync(fd);check(secret.length>0&&secret.length<=4096,"INVALID_PASSWORD_INPUT");
- const password=new TextDecoder("utf-8",{fatal:true}).decode(secret).replace(/\r?\n$/,"");secret.fill(0);
+ let secret,password;
+ try{
+  if(fileMode)secret=readPasswordFile(args[8]);
+  else{const fd=Number(process.env.VISUAL_CARD_PASSWORD_FD);check(Number.isInteger(fd)&&fd>=3&&fd<=1024,"PASSWORD_FD_REQUIRED");secret=fs.readFileSync(fd);}
+  check(secret.length>0&&secret.length<=4096,"INVALID_PASSWORD_INPUT");
+  try{password=new TextDecoder("utf-8",{fatal:true}).decode(secret).replace(/\r?\n$/,"");}catch{throw new U.ValidationError("INVALID_PASSWORD_INPUT");}
+  check(password.length>0,"INVALID_PASSWORD_INPUT");
+ }finally{if(secret)secret.fill(0);}
  const session=createSession({expectedHead,baselineSha256:U.hash(existingBytes)});
  process.stdout.write(JSON.stringify(session.header)+"\n");
  const rl=readline.createInterface({input:process.stdin,crlfDelay:Infinity});
  const timer=setTimeout(()=>{rl.close();process.stderr.write('{"status":"failed","code":"TRANSPORT_EXPIRED","productionPreserved":true}\n');process.exit(1);},300000);
  let sawLine=false;
  rl.once("line",async line=>{sawLine=true;clearTimeout(timer);try{
-  check(line.length<=110000,"INVALID_SEALED_INPUT");
+  check(line.length<=410000,"INVALID_SEALED_INPUT");
   const packet=session.open(JSON.parse(line));
   check(U.hash(fs.readFileSync(baselinePath))===U.hash(existingBytes),"BASELINE_CHANGED");
   const result=await prepareCandidate({packet,existingBytes,password,html:fs.readFileSync(path.join(ROOT,"index.html"),"utf8"),outputDirectory});
@@ -131,4 +164,4 @@ async function main(args){
  rl.once("close",()=>{if(!sawLine){clearTimeout(timer);process.exitCode=1;}});
 }
 if(require.main===module)main(process.argv.slice(2)).catch(error=>{console.error(JSON.stringify({status:"failed",code:error instanceof U.ValidationError?error.message:"DAILY_PREPARATION_FAILED",productionPreserved:true}));process.exitCode=1;});
-module.exports={createSession,prepareCandidate,main};
+module.exports={createSession,prepareCandidate,readPasswordFile,main};

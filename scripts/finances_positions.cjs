@@ -160,7 +160,8 @@ function separatedLifecycle(next, previous, records, current, source, nextIds, o
     const proofDate = [...consumed].reduce((date, id) => full.rows.get(id).date > date ? full.rows.get(id).date : date, full.baseDate);
     // Late or same-day orders cannot be replayed after an already consumed
     // endpoint. Keep their evidence pending without blocking current holdings.
-    if (!migration && pending.every(row => row.date > proofDate) && quantityEqual(proof.shares + delta(pending), actual)) {
+    if (!migration && (pending.length > 0 || !proof.initialized)
+      && pending.every(row => row.date > proofDate) && quantityEqual(proof.shares + delta(pending), actual)) {
       // Same-day opposite sides can hide a close/reopen. Never invent their
       // order, and never discard a pending round trip just because its net is 0.
       let shares = proof.shares, held = proof.hasBeenOpen, ambiguous = false;

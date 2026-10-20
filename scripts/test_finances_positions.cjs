@@ -388,6 +388,29 @@ function separationBaseline() {
 const eventProof = (data, symbol) => data.positionLifecycle.eventProofBaseline.positions.find(p =>
   p.key === data.positionLifecycle.positions.find(row => row.ticker === symbol).key);
 
+for (const initiallyMatched of [true, false])
+test(`floating ledger proof stays byte-stable after ${initiallyMatched ? "migration" : "initial holdings reconciliation"}`, () => {
+  const f = fixture();
+  f.previous.holdings.find(p => p.ticker === "DEMO").shares = 0.3;
+  f.previous.trading.DEMO.orders = [
+    {date: "2024-12-01", side: "buy", shares: 0.1, price: 9},
+    {date: "2024-12-02", side: "buy", shares: 0.2, price: 9}
+  ];
+  f.previous.historySnapshot = {asOf: "2025-01-10", holdings: copy(f.previous.holdings), trading: copy(f.previous.trading), income: copy(f.previous.income)};
+  f.snapshot.positions[0].shares = 0.3;
+  const previous = apply(f.previous, f.snapshot);
+  if (!initiallyMatched) f.snapshot.positions[0].shares = 0.5;
+  const first = separated(previous, f.snapshot), proof = eventProof(first, "DEMO");
+  assert.equal(proof.shares, 0.1 + 0.2); assert.notEqual(proof.shares, 0.3);
+  assert.equal(proof.initialized, initiallyMatched); assert.deepEqual(proof.pendingTradeIds, []);
+  f.snapshot.positions[0].shares = 0.3;
+  const stable = initiallyMatched ? first : separated(first, f.snapshot);
+  assert.equal(eventProof(stable, "DEMO").initialized, true);
+  assert.deepEqual(positionEffects(previous, stable), []);
+  assert.equal(JSON.stringify(separated(stable, f.snapshot)), JSON.stringify(stable));
+  assert.equal(JSON.stringify(separated(separated(stable, f.snapshot), f.snapshot)), JSON.stringify(stable));
+});
+
 test("eight existing positions migrate silently using ledger proof and preserve every historical byte", () => {
   const f = fixture(), symbols = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG", "HHH"];
   f.previous.holdings = symbols.map(ticker => ({ticker, type: "stock", shares: 5}));

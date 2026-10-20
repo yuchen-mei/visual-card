@@ -581,7 +581,8 @@ function buildBasisRevisionPayload(snapshot, previous, {html, policy} = {}) {
   return next;
 }
 function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy} = {}) {
-  requireThat(snapshot?.schemaVersion === 2 && snapshot.mode === "assets" && snapshot.source === "Finances" && snapshot.currency === "USD", "UNSUPPORTED_ASSET_SCHEMA");
+  requireThat([2, 3].includes(snapshot?.schemaVersion) && snapshot.mode === "assets" && snapshot.source === "Finances" && snapshot.currency === "USD", "UNSUPPORTED_ASSET_SCHEMA");
+  const holdingsValuation = snapshot.schemaVersion === 3;
   fresh(snapshot.fetchedAt, now);
   requireThat(policy && Array.isArray(policy.accountIds), "APPROVED_PRIVATE_POLICY_REQUIRED");
   const coverage = snapshot.coverage;
@@ -596,6 +597,17 @@ function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy} 
   for (const a of accounts) {
     const prior=previous.assetAudit?.accountSourceDates?.find(row=>row.account===hash(a.id));
     requireThat(["brokerage", "checking", "savings", "cash"].includes(a.type) && a.currency === "USD", "UNSUPPORTED_ACCOUNT");
+    if (holdingsValuation) {
+      same(a.valuationBasis, a.type === "brokerage" ? "institution-holdings" : "account-balance", "INVALID_ASSET_VALUATION_BASIS");
+      if (a.type === "brokerage") {
+        // Account summaries are separately dated snapshots. They cannot date,
+        // fund, or reconcile the cash and securities in this holdings valuation.
+        same(a.coverage?.balances?.basis, "complete_holdings_cash", "INVALID_ASSET_VALUATION_BASIS");
+        same(a.coverage?.holdings?.basis, "observed_complete_holdings", "INVALID_ASSET_VALUATION_BASIS");
+        requireThat(a.coverage.balances.updatedAt === null && a.coverage.balances.sourceDateStatus === "unknown"
+          && a.coverage.holdings.updatedAt === null && a.coverage.holdings.sourceDateStatus === "unknown", "INVALID_HOLDINGS_SNAPSHOT_DATE");
+      }
+    }
     for (const key of ["cashCents", "securitiesCents", "totalCents"]) requireThat(cents(a[key]) >= 0, "NEGATIVE_BALANCE_UNSUPPORTED");
     same(a.cashCents + a.securitiesCents, a.totalCents, "ACCOUNT_BALANCE_MISMATCH");
     requireThat(a.type === "brokerage" || a.securitiesCents === 0, "INVALID_BANK_SECURITIES");
@@ -625,7 +637,10 @@ function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy} 
   for (const a of accounts) same(sum(positions.filter(p=>p.accountId===a.id).map(p=>p.valueCents)),a.securitiesCents,"SECURITIES_BALANCE_MISMATCH");
   const total = cents(sum(accounts.map(a=>a.totalCents)));
   const cash = cents(sum(accounts.map(a=>a.cashCents)));
-  requireThat(snapshot.reconciliation?.independentSourceTotals === true,"INDEPENDENT_RECONCILIATION_REQUIRED");
+  if (holdingsValuation) {
+    requireThat(snapshot.reconciliation?.basis === "holdings-and-depository-balances"
+      && snapshot.reconciliation.independentSourceTotals === false, "INVALID_ASSET_RECONCILIATION_BASIS");
+  } else requireThat(snapshot.reconciliation?.independentSourceTotals === true,"INDEPENDENT_RECONCILIATION_REQUIRED");
   same(cents(snapshot.reconciliation.totalValueCents),total,"SOURCE_TOTALS_MISMATCH");
   same(cents(snapshot.reconciliation.cashCents),cash,"SOURCE_TOTALS_MISMATCH");
   const holdings = [{ticker:"CASH",nameZh:"现金",type:"cash",value:cash/100}];

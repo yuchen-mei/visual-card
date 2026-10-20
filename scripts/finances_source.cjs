@@ -49,7 +49,7 @@ function sourceRoundAssetCents({units, denominator}) {
   sourceRequire(value <= BigInt(Number.MAX_SAFE_INTEGER), "SOURCE_MONEY_OVERFLOW");
   return Number(value);
 }
-function sourceAllocateAssetCents(items, expectedTotal) {
+function sourceAllocateAssetCents(items) {
   const rows = items.map(item => ({...item, decimal: sourceAssetDecimal(item.rawValue)}));
   const denominator = rows.reduce((largest, row) => row.decimal.denominator > largest ? row.decimal.denominator : largest, 1n);
   let total = 0n, floors = 0n;
@@ -59,9 +59,8 @@ function sourceAllocateAssetCents(items, expectedTotal) {
     total += units; floors += row.cents;
   }
   const roundedTotal = sourceRoundAssetCents({units: total, denominator});
-  sourceRequire(roundedTotal === expectedTotal, "SOURCE_BROKER_BALANCE_MISMATCH");
-  // Allocate only the fractions already present in the source sum. The account
-  // balance is checked above and never supplies a balancing adjustment.
+  // Allocate only fractions already present in the complete holdings sum.
+  // The separately reported account balance never supplies an adjustment.
   const remaining = Number(BigInt(roundedTotal) - floors);
   rows.sort((a, b) => a.remainder === b.remainder
     ? (a.securityId < b.securityId ? -1 : a.securityId > b.securityId ? 1 : 0)
@@ -146,13 +145,21 @@ function normalizeAssetSnapshot({ linkedAccounts, holdingsResponses, fetchedAt, 
       sourceComplete(institution.account_coverage, "accounts");
       const type = sourceAccountType(account);
       sourceCurrency(account.balances);
-      const totalCents = sourceRoundAssetCents(sourceAssetDecimal(account.balances.current));
+      const broker = type === "brokerage";
+      const reportedTotal = broker && account.balances.current == null
+        ? null : sourceRoundAssetCents(sourceAssetDecimal(account.balances.current));
+      const reportedProof = sourceBalanceProof(account.balances, retrieved);
+      const totalCents = broker ? 0 : reportedTotal;
       selected.set(account.account_id, {
         id: account.account_id, type, currency: "USD", totalCents,
-        cashCents: type === "brokerage" ? 0 : totalCents, securitiesCents: 0,
+        valuationBasis: broker ? "institution-holdings" : "account-balance",
+        cashCents: broker ? 0 : totalCents, securitiesCents: 0,
+        ...(broker ? {reportedBalance: {totalCents: reportedTotal, coverage: reportedProof}} : {}),
         coverage: {
-          balances: sourceBalanceProof(account.balances, retrieved),
-          holdings: { complete: true, allPagesFetched: true, updatedAt: null, sourceDateStatus: "unknown", basis: type === "brokerage" ? "queried_pages_reconciled_to_account_balance" : "depository_account_classification" }
+          balances: broker
+            ? {complete: true, allPagesFetched: true, updatedAt: null, sourceDateStatus: "unknown", basis: "complete_holdings_cash"}
+            : reportedProof,
+          holdings: { complete: true, allPagesFetched: true, updatedAt: null, sourceDateStatus: "unknown", basis: broker ? "observed_complete_holdings" : "depository_account_classification" }
         }
       });
     }
@@ -227,6 +234,8 @@ function normalizeAssetSnapshot({ linkedAccounts, holdingsResponses, fetchedAt, 
           sourceRequire(cashDecimal.units % cashDecimal.denominator === 0n, "SOURCE_CASH_SUBCENT_REQUIRES_REVIEW");
           if (row.quantity !== undefined && row.quantity !== null) sourceRequire(typeof row.quantity === "number" && Number.isFinite(row.quantity) && row.quantity >= 0, "SOURCE_INVALID_QUANTITY");
           if (row.institution_price !== undefined && row.institution_price !== null) sourceRequire(typeof row.institution_price === "number" && Number.isFinite(row.institution_price) && row.institution_price >= 0, "SOURCE_INVALID_PRICE");
+          if (row.quantity != null && row.institution_price != null)
+            sourceRequire(Math.abs(sourceCents(row.quantity * row.institution_price) - value) <= 1, "SOURCE_POSITION_VALUE_MISMATCH");
           values.push({securityId, rawValue: row.institution_value}); cashRows++; continue;
         }
         sourceRequire(["equity", "stock", "etf"].includes(type), "SOURCE_UNSUPPORTED_SECURITY_TYPE");
@@ -256,24 +265,26 @@ function normalizeAssetSnapshot({ linkedAccounts, holdingsResponses, fetchedAt, 
     }
     sourceRequire(visited.size === entries.size, "SOURCE_ORPHAN_HOLDINGS_PAGE");
     sourceRequire(cashRows > 0, "SOURCE_EXPLICIT_CASH_HOLDING_REQUIRED");
+    sourceRequire(cashRows === 1, "SOURCE_AMBIGUOUS_CASH_HOLDINGS");
     const cash = [], securities = [];
-    for (const row of sourceAllocateAssetCents(values, account.totalCents)) {
+    for (const row of sourceAllocateAssetCents(values)) {
       if (row.position) {
         sourceRequire(Math.abs(row.markCents - row.cents) <= 1, "SOURCE_POSITION_VALUE_MISMATCH");
         row.position.valueCents = row.cents; securities.push(row.cents);
       } else cash.push(row.cents);
     }
     account.cashCents = sourceSum(cash); account.securitiesCents = sourceSum(securities);
-    sourceRequire(sourceSum([account.cashCents, account.securitiesCents]) === account.totalCents, "SOURCE_BROKER_BALANCE_MISMATCH");
+    account.totalCents = sourceSum([account.cashCents, account.securitiesCents]);
   }
   const accounts = [...selected.values()].sort((a, b) => a.id.localeCompare(b.id));
   positions.sort((a, b) => a.accountId.localeCompare(b.accountId) || a.ticker.localeCompare(b.ticker));
   return {
-    schemaVersion: 2, mode: "assets", source: "Finances", currency: "USD", fetchedAt: retrieved,
+    schemaVersion: 3, mode: "assets", source: "Finances", currency: "USD", fetchedAt: retrieved,
     previousCiphertextSha256: baselineSha256,
     coverage: { accountsComplete: true, allPagesFetched: true, accountIds: [...approved].sort() },
     accounts, positions,
-    reconciliation: { independentSourceTotals: true, totalValueCents: sourceSum(accounts.map(account => account.totalCents)), cashCents: sourceSum(accounts.map(account => account.totalCents - account.securitiesCents)) }
+    reconciliation: { basis: "holdings-and-depository-balances", independentSourceTotals: false,
+      totalValueCents: sourceSum(accounts.map(account => account.totalCents)), cashCents: sourceSum(accounts.map(account => account.cashCents)) }
   };
 }
 

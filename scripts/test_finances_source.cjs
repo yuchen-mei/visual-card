@@ -44,19 +44,33 @@ function fixture() {
 }
 const resultOf = input => input.holdingsResponses[0].response.results[0].result;
 const brokerOf = input => input.linkedAccounts.institutions[0].accounts[0];
+const bankOf = input => input.linkedAccounts.institutions[1].accounts[0];
+function withoutReportedBalances(snapshot) {
+  const result = copy(snapshot);
+  for (const account of result.accounts) delete account.reportedBalance;
+  return result;
+}
 function failure(code, change) {
   const input = fixture(); change(input);
   assert.throws(() => normalizeAssetSnapshot(input), error => error instanceof FinancesSourceError && error.code === code && error.message === code);
 }
 function freeze(value) { if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); } return value; }
 
-test("normalizes current assets with independent balances and excludes unapproved credit", () => {
+test("schema 3 values brokerage holdings and depository balances without claiming independent totals", () => {
   const input = fixture(), before = JSON.stringify(input);
   const result = normalizeAssetSnapshot(freeze(input));
   assert.equal(JSON.stringify(input), before);
-  assert.equal(result.schemaVersion, 2); assert.equal(result.mode, "assets");
+  assert.equal(result.schemaVersion, 3); assert.equal(result.mode, "assets");
   assert.equal(result.accounts.length, 4); assert.equal(result.positions.length, 2);
-  assert.deepEqual(result.reconciliation, { independentSourceTotals: true, totalValueCents: 16038, cashCents: 8038 });
+  assert.deepEqual(result.reconciliation, { basis: "holdings-and-depository-balances", independentSourceTotals: false, totalValueCents: 16038, cashCents: 8038 });
+  for (const account of result.accounts) {
+    assert.equal(account.valuationBasis, account.type === "brokerage" ? "institution-holdings" : "account-balance");
+    if (account.type === "brokerage") {
+      assert.equal(account.coverage.balances.basis, "complete_holdings_cash");
+      assert.equal(account.coverage.holdings.basis, "observed_complete_holdings");
+      assert.equal(account.reportedBalance.totalCents, 10025);
+    } else assert.equal(Object.hasOwn(account, "reportedBalance"), false);
+  }
   assert.equal(result.accounts.find(a => a.id === "synthetic-cd").type, "cash");
   assert.equal(Object.hasOwn(result, "transactions"), false);
   assert.equal(Object.hasOwn(result.coverage, "historyFromInception"), false);
@@ -94,7 +108,7 @@ test("USD cash is aggregated once while a genuine USD ETF remains a security", (
   assert.equal(broker.totalCents, 10025);
   assert.equal(broker.totalCents, broker.cashCents + broker.securitiesCents);
   assert.deepEqual(result.reconciliation, {
-    independentSourceTotals: true, totalValueCents: 16038, cashCents: 8038
+    basis: "holdings-and-depository-balances", independentSourceTotals: false, totalValueCents: 16038, cashCents: 8038
   });
   assert.equal(result.reconciliation.totalValueCents,
     result.reconciliation.cashCents + result.positions.reduce((sum, p) => sum + p.valueCents, 0));
@@ -112,17 +126,46 @@ test("retrieval, record updates, sync dates and price dates never become balance
   assert.ok(result.positions.every(p => p.priceAsOf === "2025-03-11"));
 });
 
-test("only observed balance dates or source-reported timestamps become dated proof", () => {
+test("depository balance dates and source-reported timestamps retain their original meaning", () => {
   const input = fixture();
-  brokerOf(input).balances.balance_date = "2025-03-11";
-  const dateProof = normalizeAssetSnapshot(input).accounts.find(a => a.type === "brokerage").coverage.balances;
+  bankOf(input).balances.balance_date = "2025-03-11";
+  const dateProof = normalizeAssetSnapshot(input).accounts.find(a => a.type === "checking").coverage.balances;
   assert.equal(dateProof.updatedAt, "2025-03-11T00:00:00.000Z");
   assert.equal(dateProof.dateBasis, "balance_date");
-  brokerOf(input).balances.last_updated_datetime_source = "source_reported";
-  brokerOf(input).balances.last_updated_datetime = "2025-03-12T02:00:00-07:00";
-  const timestampProof = normalizeAssetSnapshot(input).accounts.find(a => a.type === "brokerage").coverage.balances;
+  bankOf(input).balances.last_updated_datetime_source = "source_reported";
+  bankOf(input).balances.last_updated_datetime = "2025-03-12T02:00:00-07:00";
+  const timestampProof = normalizeAssetSnapshot(input).accounts.find(a => a.type === "checking").coverage.balances;
   assert.equal(timestampProof.updatedAt, "2025-03-12T09:00:00.000Z");
   assert.equal(timestampProof.dateBasis, "source_reported");
+});
+
+test("reported brokerage balance dates remain diagnostic and never date holdings cash", () => {
+  const input = fixture(), expected = withoutReportedBalances(normalizeAssetSnapshot(input));
+  brokerOf(input).balances.balance_date = "2025-03-11";
+  let broker = normalizeAssetSnapshot(input).accounts.find(a => a.type === "brokerage");
+  assert.equal(broker.reportedBalance.coverage.updatedAt, "2025-03-11T00:00:00.000Z");
+  assert.equal(broker.reportedBalance.coverage.dateBasis, "balance_date");
+  brokerOf(input).balances.last_updated_datetime_source = "source_reported";
+  brokerOf(input).balances.last_updated_datetime = "2025-03-12T02:00:00-07:00";
+  const snapshot = normalizeAssetSnapshot(input);
+  broker = snapshot.accounts.find(a => a.type === "brokerage");
+  assert.equal(broker.reportedBalance.coverage.updatedAt, "2025-03-12T09:00:00.000Z");
+  assert.equal(broker.reportedBalance.coverage.dateBasis, "source_reported");
+  assert.deepEqual(broker.coverage.balances, {
+    complete: true, allPagesFetched: true, updatedAt: null,
+    sourceDateStatus: "unknown", basis: "complete_holdings_cash"
+  });
+  assert.deepEqual(withoutReportedBalances(snapshot), expected);
+});
+
+test("unknown reported brokerage current does not become zero or change holdings valuation", () => {
+  const expected = withoutReportedBalances(normalizeAssetSnapshot(fixture()));
+  for (const current of [null, undefined]) {
+    const input = fixture(); brokerOf(input).balances.current = current;
+    const result = normalizeAssetSnapshot(input);
+    assert.equal(result.accounts.find(a => a.type === "brokerage").reportedBalance.totalCents, null);
+    assert.deepEqual(withoutReportedBalances(result), expected);
+  }
 });
 
 test("raw MCP wrappers are unwrapped without printing or retaining wrapper metadata", () => {
@@ -209,11 +252,13 @@ test("fractional rounding is unchanged by row order, page partition or response 
   input.holdingsResponses.push(second); input.holdingsResponses.reverse();
   assert.deepEqual(normalizeAssetSnapshot(input), expected);
 });
-test("a real rounded-total discrepancy is rejected rather than allocated to a position", () => {
-  // 100.25 equals the old sum of individually rounded rows but not the true sum.
-  for (const total of [100.25, 100.27])
-    assert.throws(() => normalizeAssetSnapshot(fractionalFixture([40.004, 40.004], total)),
-      {message: "SOURCE_BROKER_BALANCE_MISMATCH"});
+test("small and large reported-total differences never alter cash, securities or allocation", () => {
+  const expected = withoutReportedBalances(normalizeAssetSnapshot(fractionalFixture([40.004, 40.004], 100.26)));
+  for (const total of [0, 0.01, 100.25, 100.27, 99999.99]) {
+    const result = normalizeAssetSnapshot(fractionalFixture([40.004, 40.004], total));
+    assert.equal(result.accounts.find(a => a.type === "brokerage").reportedBalance.totalCents, Math.round(total * 100));
+    assert.deepEqual(withoutReportedBalances(result), expected);
+  }
 });
 test("subcent cash requires review so security valuation cannot alter buying power", () => {
   for (const stock of [1.003, 1.006])
@@ -240,6 +285,32 @@ test("complete explicit field projection is safe and optional price dates stay u
 test("empty brokerage response requires its explicit account query and cash evidence", () => {
   const input = fixture(); resultOf(input).items = []; brokerOf(input).balances.current = 0;
   assert.throws(() => normalizeAssetSnapshot(input), { message: "SOURCE_EXPLICIT_CASH_HOLDING_REQUIRED" });
+});
+
+test("distinct cash identities in one brokerage require review even across complete pages", () => {
+  for (const split of [false, true]) {
+    const input = fixture();
+    const cash = holding("synthetic-second-cash", "USD", "cash", 2, 1);
+    if (split) {
+      const second = copy(input.holdingsResponses[0]);
+      second.queries[0].cursor = "synthetic-cash-page";
+      second.response.results[0].result.items = [cash];
+      resultOf(input).has_more = true; resultOf(input).next_cursor = "synthetic-cash-page";
+      input.holdingsResponses.push(second);
+    } else resultOf(input).items.push(cash);
+    assert.throws(() => normalizeAssetSnapshot(input), {message: "SOURCE_AMBIGUOUS_CASH_HOLDINGS"});
+  }
+});
+
+test("cash quantity and price must agree when both are reported, without inventing either", () => {
+  failure("SOURCE_POSITION_VALUE_MISMATCH", input => { resultOf(input).items[0].institution_price = 2; });
+  failure("SOURCE_POSITION_VALUE_MISMATCH", input => { resultOf(input).items[0].quantity = 0; });
+  for (const field of ["quantity", "institution_price"]) {
+    for (const missing of [null, undefined]) {
+      const input = fixture(); resultOf(input).items[0][field] = missing;
+      assert.equal(normalizeAssetSnapshot(input).accounts.find(a => a.type === "brokerage").cashCents, 2025);
+    }
+  }
 });
 
 test("orphan pages, cursor cycles and changed request shape fail closed", () => {
@@ -279,15 +350,19 @@ const cases = [
   ["SOURCE_INCOMPLETE_ACCOUNT_COVERAGE", i => { i.linkedAccounts.institutions[0].account_coverage.state = "partial"; }],
   ["SOURCE_DELETED_INSTITUTION", i => { i.linkedAccounts.institutions[0].is_reset_tombstone = true; }],
   ["SOURCE_UNSUPPORTED_CURRENCY", i => { brokerOf(i).balances.iso_currency_code = "EUR"; }],
-  ["SOURCE_INVALID_MONEY", i => { brokerOf(i).balances.current = null; }],
+  ["SOURCE_INVALID_MONEY", i => { bankOf(i).balances.current = null; }],
+  ["SOURCE_INVALID_MONEY", i => { delete bankOf(i).balances.current; }],
+  ["SOURCE_INVALID_MONEY", i => { bankOf(i).balances.current = -1; }],
   ["SOURCE_INVALID_MONEY", i => { brokerOf(i).balances.current = -1; }],
   ["SOURCE_INVALID_MONEY", i => { brokerOf(i).balances.current = "100.25"; }],
   ["SOURCE_INVALID_MONEY", i => { resultOf(i).items[1].institution_value = NaN; }],
   ["SOURCE_MONEY_OVERFLOW", i => { brokerOf(i).balances.current = Number.MAX_SAFE_INTEGER; }],
   ["SOURCE_INVALID_DATE", i => { brokerOf(i).balances.balance_date = "2025-02-30"; }],
+  ["SOURCE_INVALID_DATE", i => { bankOf(i).balances.balance_date = "2025-02-30"; }],
   ["SOURCE_INVALID_TIMESTAMP", i => { i.fetchedAt = "2025-03-12"; }],
   ["SOURCE_INVALID_TIMESTAMP", i => { brokerOf(i).balances.last_updated_datetime_source = "source_reported"; brokerOf(i).balances.last_updated_datetime = null; }],
   ["SOURCE_FUTURE_BALANCE_DATE", i => { brokerOf(i).balances.balance_date = "2025-03-13"; }],
+  ["SOURCE_FUTURE_BALANCE_DATE", i => { bankOf(i).balances.balance_date = "2025-03-13"; }],
   ["SOURCE_INVALID_BASELINE_HASH", i => { i.baselineSha256 = "invalid"; }],
   ["SOURCE_TOOL_ERROR", i => { i.linkedAccounts.isError = true; }],
   ["SOURCE_HOLDINGS_RESPONSES_REQUIRED", i => { delete i.holdingsResponses; }],
@@ -316,8 +391,7 @@ const cases = [
   ["SOURCE_INVALID_PRICE", i => { resultOf(i).items[1].institution_price = 0; }],
   ["SOURCE_POSITION_VALUE_MISMATCH", i => { resultOf(i).items[1].institution_price = 21; }],
   ["SOURCE_FUTURE_PRICE_DATE", i => { resultOf(i).items[1].institution_price_as_of = "2025-03-13"; }],
-  ["SOURCE_EXPLICIT_CASH_HOLDING_REQUIRED", i => { resultOf(i).items.shift(); }],
-  ["SOURCE_BROKER_BALANCE_MISMATCH", i => { brokerOf(i).balances.current += 1; }]
+  ["SOURCE_EXPLICIT_CASH_HOLDING_REQUIRED", i => { resultOf(i).items.shift(); }]
 ];
 for (const [index, [code, change]] of cases.entries()) test(`fails closed: ${code} (${index + 1})`, () => failure(code, change));
 
@@ -329,9 +403,11 @@ test("pure core runs in a functions-style runtime without require, module, crypt
   assert.deepEqual(copy(actual), normalizeAssetSnapshot(fixture()));
   const fractions = fractionalFixture([40.004, 40.004], 100.26);
   assert.deepEqual(copy(context.normalizeAssetSnapshot(fractions)), normalizeAssetSnapshot(fractions));
+  brokerOf(fractions).balances.current = null;
+  assert.deepEqual(copy(context.normalizeAssetSnapshot(fractions)), normalizeAssetSnapshot(fractions));
 });
 
-test("schema 2 integrates with updater while preserving synthetic historical data", () => {
+test("schema 3 integrates with updater while preserving synthetic historical data", () => {
   const { buildAssetPayload } = require("./update_finances.cjs");
   const input = fixture();
   const snapshot = normalizeAssetSnapshot(input);
@@ -343,9 +419,9 @@ test("schema 2 integrates with updater while preserving synthetic historical dat
   assert.equal(result.holdings.reduce((sum, row) => sum + Math.round(row.value * 100), 0), 16038);
 });
 
-test("allocated source totals pass the unchanged updater and actual browser contract", () => {
+test("allocated holdings totals pass the updater and actual browser contract without the reported aggregate", () => {
   const {buildAssetPayload, browserContract} = require("./update_finances.cjs");
-  const input = fractionalFixture([40.004, 40.004], 100.26), snapshot = normalizeAssetSnapshot(input);
+  const input = fractionalFixture([40.004, 40.004], 1), snapshot = normalizeAssetSnapshot(input);
   const previous = {asOf: "2025-03-01", holdings: [{ticker: "CASH", type: "cash", value: 100}],
     performance: {totalGain: 5, totalPrincipal: 95, totalCurrentValue: 100, totalReturnPct: 5 / 95 * 100,
       items: [{label: "现金利息", kind: "cash_interest", gain: 5}]}};
@@ -356,4 +432,20 @@ test("allocated source totals pass the unchanged updater and actual browser cont
   assert.equal(Math.round(displayed.cashValue * 100), 8038);
   assert.equal(Math.round(displayed.totalAssetValue * 100), 16039);
   assert.deepEqual(next.performance, previous.performance);
+});
+
+test("reported aggregate and timestamp changes do not enter encrypted business data", () => {
+  const {buildAssetPayload, businessData} = require("./update_finances.cjs");
+  const input = fixture();
+  const previous = {asOf: "2025-03-01", holdings: [{ticker: "CASH", type: "cash", value: 100}],
+    performance: {totalGain: 5, totalPrincipal: 95, totalCurrentValue: 100, totalReturnPct: 5 / 95 * 100,
+      items: [{label: "现金利息", kind: "cash_interest", gain: 5}]}};
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const options = {now: Date.parse(input.fetchedAt), html, policy: input.policy};
+  const baseline = buildAssetPayload(normalizeAssetSnapshot(input), previous, options);
+  brokerOf(input).balances.current = 99999.99;
+  brokerOf(input).balances.balance_date = "2025-03-11";
+  const next = buildAssetPayload(normalizeAssetSnapshot(input), previous, options);
+  assert.deepEqual(businessData(next), businessData(baseline));
+  assert.equal(JSON.stringify(next).includes("reportedBalance"), false);
 });

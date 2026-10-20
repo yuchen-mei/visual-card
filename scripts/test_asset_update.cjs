@@ -14,6 +14,67 @@ function snapshot(){
  return {schemaVersion:2,mode:"assets",source:"Finances",currency:"USD",fetchedAt:"2026-10-18T02:00:00Z",coverage:{accountsComplete:true,allPagesFetched:true,accountIds:copy(policy.accountIds)},accounts:[{id:"synthetic-broker",type:"brokerage",currency:"USD",cashCents:100000,securitiesCents:15000,totalCents:115000,coverage:{balances:copy(proof),holdings:copy(proof)}},{id:"synthetic-bank",type:"checking",currency:"USD",cashCents:50000,securitiesCents:0,totalCents:50000,coverage:{balances:copy(proof),holdings:copy(proof)}}],positions:[{accountId:"synthetic-broker",ticker:"DEMO",type:"stock",shares:5,valueCents:15000,priceAsOf:"2026-10-17"}],reconciliation:{independentSourceTotals:true,totalValueCents:165000,cashCents:150000}};
 }
 const build=(s=snapshot(),old=oldData(),p=policy)=>U.buildAssetPayload(s,old,{html,now,policy:p});
+function holdingsSnapshot(){
+ const s=snapshot();s.schemaVersion=3;
+ s.reconciliation={...s.reconciliation,basis:"holdings-and-depository-balances",independentSourceTotals:false};
+ for(const a of s.accounts){
+  a.valuationBasis=a.type==="brokerage"?"institution-holdings":"account-balance";
+  if(a.type==="brokerage"){
+   a.reportedBalance={totalCents:1,coverage:{...copy(a.coverage.balances),updatedAt:"2020-01-01T00:00:00Z",sourceDateStatus:"known"}};
+   a.coverage.balances.basis="complete_holdings_cash";
+   a.coverage.holdings.basis="observed_complete_holdings";
+  }
+ }
+ return s;
+}
+test("holdings valuation uses component amounts and never promotes a cached account balance or its date",()=>{
+ const s=holdingsSnapshot(),data=build(s),expected=build();
+ assert.deepEqual(data,expected);
+ s.accounts[0].reportedBalance.totalCents=99999999;
+ s.accounts[0].reportedBalance.coverage.updatedAt="2026-10-17T00:00:00Z";
+ assert.deepEqual(build(s),data);
+ assert.equal(data.assetSnapshot.sourceAsOf,null);
+ assert.ok(!JSON.stringify(data).includes("reportedBalance"));
+});
+test("holdings valuation requires its explicit non-independent contract and account basis",()=>{
+ for(const change of [
+  s=>{s.reconciliation.independentSourceTotals=true;},
+  s=>{delete s.reconciliation.basis;},
+  s=>{s.reconciliation.basis="account-balances";}
+ ]){const s=holdingsSnapshot();change(s);assert.throws(()=>build(s),{message:"INVALID_ASSET_RECONCILIATION_BASIS"});}
+ for(const change of [
+  s=>{delete s.accounts[0].valuationBasis;},
+  s=>{s.accounts[1].valuationBasis="institution-holdings";},
+  s=>{s.accounts[0].coverage.balances.basis="observed_account_coverage";},
+  s=>{delete s.accounts[0].coverage.holdings.basis;}
+ ]){const s=holdingsSnapshot();change(s);assert.throws(()=>build(s),{message:"INVALID_ASSET_VALUATION_BASIS"});}
+ const legacy=snapshot();legacy.reconciliation.independentSourceTotals=false;
+ assert.throws(()=>build(legacy),{message:"INDEPENDENT_RECONCILIATION_REQUIRED"});
+});
+test("holdings valuation cannot borrow account or price timestamps for a complete snapshot",()=>{
+ for(const name of ["balances","holdings"]){
+  const s=holdingsSnapshot();s.accounts[0].coverage[name].updatedAt=s.fetchedAt;s.accounts[0].coverage[name].sourceDateStatus="known";
+  assert.throws(()=>build(s),{message:"INVALID_HOLDINGS_SNAPSHOT_DATE"});
+ }
+ const bank=holdingsSnapshot();bank.accounts[1].coverage.balances.updatedAt="2020-01-01T00:00:00Z";bank.accounts[1].coverage.balances.sourceDateStatus="known";
+ assert.throws(()=>build(bank),{message:"STALE_OR_FUTURE_SOURCE"});
+});
+test("holdings valuation still rejects broken arithmetic, partial coverage and mismatched scope",()=>{
+ for(const [change,code] of [
+  [s=>{s.accounts[0].totalCents++;},"ACCOUNT_BALANCE_MISMATCH"],
+  [s=>{s.positions[0].valueCents++;},"SECURITIES_BALANCE_MISMATCH"],
+  [s=>{s.reconciliation.cashCents++;},"SOURCE_TOTALS_MISMATCH"],
+  [s=>{s.accounts[0].coverage.holdings.allPagesFetched=false;},"INCOMPLETE_ASSET_DATASET"],
+  [s=>{s.coverage.accountIds.pop();},"ACCOUNT_COVERAGE_MISMATCH"]
+ ]){const s=holdingsSnapshot();change(s);assert.throws(()=>build(s),{message:code});}
+});
+test("changing only diagnostic account balances never re-encrypts holdings data",async()=>{
+ const s=holdingsSnapshot(),data=build(s),password="synthetic-holdings-only";
+ const bytes=Buffer.from(JSON.stringify(U.encrypt(data,password)));
+ s.previousCiphertextSha256=U.hash(bytes);s.accounts[0].reportedBalance.totalCents=7654321;
+ const result=await U.prepareUpdate({snapshot:s,existingBytes:bytes,password,html,now,policy,encryptFn(){assert.fail("diagnostic-only change must not encrypt");}});
+ assert.equal(result.status,"unchanged");
+});
 test("reconciled assets update independently while old history stays exact",()=>{
  const old=oldData(),data=build();
  assert.equal(data.holdings.reduce((n,h)=>n+h.value,0),1650);

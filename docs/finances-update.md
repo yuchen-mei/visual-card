@@ -21,12 +21,18 @@ node scripts/finances_daily.cjs --serve-file \
 ## 真实数据读取与交易合并
 
 1. 从 GitHub main 读取最新 head 和 `data.enc.json`，绑定密文原始字节的 SHA256。独立批准的账户哈希集合必须与真实账户范围一致。
-2. 查询全部目标账户余额及券商完整持仓分页，核对现金、证券市值、账户总额和独立总资产。银行与券商现金统一展示为“现金”，不显示来源。
+2. 查询全部目标账户余额及券商完整持仓分页。银行现金使用账户余额；券商现金与股票/ETF 估值使用完整持仓中的 `institution_value`。核对组成项、逐仓数量与价格、现金和证券内部总额。银行与券商现金统一展示为“现金”，不显示来源。
 3. 对每个投资账户查询未加日期或其他过滤的 `investment_transactions`，按 `date` 升序逐页读取；运行时使用每页 20 条。来源适配器检查请求、结果索引、账户、所有 cursor 链及重复交易 ID。缺页、游离页、查询变动或缺失账户都停止运行。
 4. 仅规范化 `buy/buy` 与 `sell/sell`。供应商买入数量和金额必须为正，卖出必须为负；规范化后股数为绝对值，金额美分保留原符号。记录中的 ticker 可用于已卖出证券，不依赖当前持仓。日期明确采用供应商结算日 `provider-settlement-date`，不能拿 `transaction_datetime` 推断成交日或补齐缺失日期。
 5. 来源中的明确现金、利息、股息、转账和费用记录不在本步骤生成收入或交易；已知 `fee / miscellaneous fee` 可跳过。取消、公司行动、带非零数量及非现金证券依据的转入转出、未知类别、必要字段缺失或金额方向异常会停止，不静默遗漏。
 
 `allPagesFetched: true` 仅表示观察到每条查询链正常结束。`sourceAsOf` 和 `queriedFrom` 保留 `null`，`historyFromInception` 为 `false`；账户同步或抓取时间不能变成来源更新时间，也不能证明取得成立以来完整历史。
+
+资产适配器使用 schema 3，明确 `basis: holdings-and-depository-balances` 与 `independentSourceTotals: false`。券商现金必须有且只有一条明确现金持仓，证券与现金金额只取来源持仓；分币分配只使用持仓原额的实际小数，不向现金塞入调平差额。缺页、账户变化、重复证券、现金歧义、未知证券类型、币种错误、数量与价格不符，以及无法由真实交易解释的份额变化仍停止更新。银行余额校验及 schema 1 完整账本的独立对账要求保持不变。
+
+`balances.current` 是另一份账户汇总快照，仅在本次内存中的 `reportedBalance` 保留作诊断；它不决定持仓估值、现金或已确认收益公式，其单独变化不会触发加密。Finances 将余额标为最新可用快照；[Plaid Accounts 文档](https://plaid.com/docs/api/accounts/)说明非实时余额可能缓存或根据交易调整，[Investments 文档](https://plaid.com/docs/api/products/investments/)将 `institution_value` 定义为机构报告的持仓价值。两者没有共同快照或恒等保证，因此不强制持仓合计等于账户汇总，也不推断差额原因。这里计算的是持仓资产估值，不宣称它是扣除融资等项目后的实时账户净值。
+
+券商现金持仓没有可靠的资产时点时保持 `unknown`；账户余额日期和证券价格日期不能替代该时点。价格日期单独保留并校验。此契约沿用已确认的“手动本金减券商现金”近似收益口径，不新增入金、收益、结算或本金推断，也不重加已取消的现金补额。
 
 `finances_trades.cjs` 保留全部 legacy 订单及原 `historySnapshot`。首次合并要求原订单的最晚日期与历史快照日期一致，并将其固定为 `baselineCutoff`；以后不会随新订单向前移动。只追加严格晚于该边界的真实买卖记录。稳定 ID 由账户 ID 和供应商交易 ID 的组合散列得到，原始 ID 不进入输出订单。
 

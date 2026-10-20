@@ -280,6 +280,50 @@ test("explicit settled supplement state keeps the denominator continuous", () =>
   assert.equal(build(s, after).performance.totalPrincipal, 740);
 });
 
+test("holdings valuation preserves the confirmed zero supplement and return formula despite unrelated account summaries", async () => {
+  const s = snapshot(), old = previous();
+  changeCash(s, 0, 5000);
+  old.userConfirmedReturnMethod = {...old.userConfirmedReturnMethod,
+    providerCashCents: 25000, buyingPowerSupplementCents: 0, supplementState: "reflected-in-provider-snapshot"};
+  s.schemaVersion = 3;
+  s.reconciliation = {...s.reconciliation, basis: "holdings-and-depository-balances", independentSourceTotals: false};
+  for (const a of s.accounts) {
+    a.valuationBasis = a.type === "brokerage" ? "institution-holdings" : "account-balance";
+    if (a.type === "brokerage") {
+      a.reportedBalance = {totalCents: 12345678};
+      a.coverage.balances.basis = "complete_holdings_cash";
+      a.coverage.holdings.basis = "observed_complete_holdings";
+    }
+  }
+  const first = build(s, old);
+  assert.equal(first.performance.totalPrincipal, 750);
+  assert.equal(first.performance.totalGain, 150);
+  assert.equal(first.userConfirmedReturnMethod.buyingPowerSupplementCents, 0);
+  assert.deepEqual(first.userConfirmedCapital, old.userConfirmedCapital);
+  assert.deepEqual(first.income, old.income);
+  const baseline = Buffer.from(JSON.stringify(U.encrypt(first, password)));
+  s.previousCiphertextSha256 = U.hash(baseline);
+  s.accounts[0].reportedBalance.totalCents = 1;
+  const unchanged = await U.prepareUpdate({snapshot: s, existingBytes: baseline, password, html, now, policy,
+    encryptFn() { assert.fail("account summaries must not trigger encryption"); }});
+  assert.equal(unchanged.status, "unchanged");
+  changeValue(s, 10000);
+  const changed = await U.prepareUpdate({snapshot: s, existingBytes: baseline, password, html, now, policy});
+  assert.equal(changed.status, "changed");
+  const next = U.decrypt(JSON.parse(changed.bytes), password);
+  assert.deepEqual(copy(await U.browserContract(html).decryptPayload(JSON.parse(changed.bytes), password)), next);
+  assert.equal(next.performance.totalGain, 250);
+  assert.equal(next.performance.totalPrincipal, 750);
+  assert.equal(next.userConfirmedReturnMethod.buyingPowerSupplementCents, 0);
+  assert.equal(next.userConfirmedReturnMethod.confirmedCdInterestIncludedCents, 2000);
+  assert.equal(next.performance.items[1].components[0].gain, 20);
+  assert.deepEqual(next.userConfirmedCapital, first.userConfirmedCapital);
+  assert.deepEqual(next.historySnapshot, first.historySnapshot);
+  assert.deepEqual(next.trading, first.trading);
+  assert.deepEqual(next.income, first.income);
+  assert.deepEqual(annual(next), annual(first));
+});
+
 function supplementPolicy() {
   return {...copy(policy), supplementConfirmation: {source: "user-confirmed", sourceMessageId: "synthetic-cash-confirmation",
     expectedPrincipalCents: 100000, expectedProviderCashCents: 20000, expectedSupplementCents: 5000,

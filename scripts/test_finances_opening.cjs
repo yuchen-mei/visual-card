@@ -177,3 +177,76 @@ test("standalone quantity validation verifies the audit instead of trusting its 
   const wrong = copy(snapshot); wrong.positions[0].shares = Infinity;
   assert.throws(() => O.validateOpeningQuantities(data, wrong), {code: "OPENING_INVALID_POSITION"});
 });
+
+const separation = {version: 1, authorizationRef: "synthetic-separate-source-and-ledger"};
+function separatedFixture() {
+  const f = fixture(); f.policy.currentSnapshotLedgerSeparation = copy(separation);
+  f.snapshot.positions[0].shares += 2;
+  return f;
+}
+test("explicit separation keeps the fixed opening and real ledger while auditing only current quantity differences", () => {
+  const f = separatedFixture(), before = copy(f.previous), next = apply(f);
+  assert.deepEqual(next.quantityReconciliation, {version: 1, authorization: separation,
+    method: "source-holdings-independent-of-ledger", sourceAsOf: null, sourceDateStatus: "unknown", matched: false,
+    differences: [{ticker: "DEMO", ledgerShares: 11, holdingShares: 13}]});
+  assert.equal(next.trading.DEMO.openingPosition.shares, 8);
+  assert.deepEqual(next.trading.DEMO.orders, before.trading.DEMO.orders);
+  assert.deepEqual(next.historySnapshot, before.historySnapshot); assert.deepEqual(f.previous, before);
+  assert.doesNotMatch(JSON.stringify(next.quantityReconciliation), /fetchedAt|checkedAt|retrievedAt/);
+});
+test("unauthorized current gaps, invalid policies and changed approval still fail closed", () => {
+  const missing = separatedFixture(); delete missing.policy.currentSnapshotLedgerSeparation;
+  rejects(missing, "OPENING_CURRENT_QUANTITY_MISMATCH");
+  for (const bad of [true, null, {version: 2, authorizationRef: "synthetic"}, {version: 1, authorizationRef: ""}, {...separation, source: "user-confirmed"}]) {
+    const f = separatedFixture(); f.policy.currentSnapshotLedgerSeparation = bad;
+    rejects(f, bad?.authorizationRef === "" ? "OPENING_AUTHORIZATION_INVALID" : "OPENING_SEPARATION_AUTHORIZATION_INVALID");
+  }
+  const f = separatedFixture(), data = apply(f);
+  const changed = {previous: data, next: copy(data), snapshot: f.snapshot, policy: {currentSnapshotLedgerSeparation: {...separation, authorizationRef: "synthetic-other"}}};
+  rejects(changed, "OPENING_SEPARATION_AUTHORIZATION_CHANGED");
+});
+test("saved encrypted separation authority is reusable and audit changes only with actual quantities", () => {
+  const f = separatedFixture(), data = apply(f), before = canonical(data);
+  const next = copy(data); O.applyOpeningPositions(next, data, copy(f.snapshot), {});
+  assert.equal(canonical(next), before);
+  assert.deepEqual(O.resolveQuantitySeparation(data, {}), separation);
+  const changedSnapshot = copy(f.snapshot); changedSnapshot.positions[0].shares += 1;
+  const changed = copy(data); O.applyOpeningPositions(changed, data, changedSnapshot, {});
+  assert.equal(changed.quantityReconciliation.differences[0].holdingShares, 14);
+  assert.deepEqual(changed.openingPositionAudit, data.openingPositionAudit);
+  assert.deepEqual(changed.trading, data.trading); assert.equal(canonical(data), before);
+});
+test("real source alignment clears the difference without rolling the opening or inventing orders", () => {
+  const f = separatedFixture(), data = apply(f), matched = copy(data), current = copy(f.snapshot);
+  current.positions[0].shares -= 2;
+  O.applyOpeningPositions(matched, data, current, {});
+  assert.equal(matched.quantityReconciliation.matched, true); assert.deepEqual(matched.quantityReconciliation.differences, []);
+  assert.deepEqual(matched.trading, data.trading); assert.deepEqual(matched.historySnapshot, data.historySnapshot);
+  const ledgerCaughtUp = copy(data);
+  ledgerCaughtUp.trading.DEMO.orders.push(order("2024-08-01", "buy", 2, {id: "synthetic-later-real-order"}));
+  O.applyOpeningPositions(ledgerCaughtUp, data, f.snapshot, {});
+  assert.equal(ledgerCaughtUp.quantityReconciliation.matched, true);
+  assert.deepEqual(ledgerCaughtUp.trading.DEMO.openingPosition, data.trading.DEMO.openingPosition);
+});
+test("separation validation is immutable and recomputes the audit instead of trusting its matched flag", () => {
+  const f = separatedFixture(), data = apply(f), before = canonical(data);
+  const options = {currentSnapshotLedgerSeparation: O.resolveQuantitySeparation(data, {})};
+  assert.equal(O.validateOpeningQuantities(data, f.snapshot, options), data); assert.equal(canonical(data), before);
+  assert.throws(() => O.validateOpeningQuantities(data, f.snapshot), {code: "OPENING_CURRENT_QUANTITY_MISMATCH"});
+  const forged = copy(data); forged.quantityReconciliation.differences[0].holdingShares += 1;
+  assert.throws(() => O.validateOpeningQuantities(forged, f.snapshot, options), {code: "OPENING_RECONCILIATION_CHANGED"});
+  const invalid = copy(data); invalid.quantityReconciliation.matched = true;
+  assert.throws(() => O.resolveQuantitySeparation(invalid, {}), {code: "OPENING_RECONCILIATION_INVALID"});
+});
+test("authorization cannot waive fixed-history, old-order, negative-daily or malformed-position guards", () => {
+  const history = separatedFixture(); history.next.historySnapshot.income[0].amount += 1;
+  rejects(history, "OPENING_HISTORY_CHANGED");
+  const edited = separatedFixture(); edited.next.trading.DEMO.orders[0].price += 1;
+  rejects(edited, "OPENING_LEGACY_ORDERS_CHANGED");
+  const negative = separatedFixture(); negative.next.trading.DEMO.orders.push(order("2024-08-01", "sell", 20));
+  rejects(negative, "OPENING_NEGATIVE_DAILY_POSITION");
+  const invalid = separatedFixture(); invalid.snapshot.positions[0].shares = -1;
+  rejects(invalid, "OPENING_INVALID_POSITION");
+  const missingOpening = {previous: {trading: {}}, next: {trading: {}}, snapshot: {positions: []}, policy: {currentSnapshotLedgerSeparation: separation}};
+  rejects(missingOpening, "OPENING_RECONCILIATION_REQUIRES_OPENING");
+});

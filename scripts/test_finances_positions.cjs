@@ -176,14 +176,14 @@ function openingPolicy(previous) {
   return previous.openingPositionAudit ? policy : {...policy, openingPositionAuthorization: {
     version: 1, authorizationRef: "synthetic-opening-consent", historySha256: hash(canonical(previous.historySnapshot))}};
 }
-function openingCandidate(previous, snapshot, appended = []) {
+function openingCandidate(previous, snapshot, appended = [], consent = openingPolicy(previous)) {
   const next = copy(previous); next.tradeSync = sync(snapshot);
   next.holdings = [{ticker: "CASH", type: "cash", value: 20}, ...snapshot.positions.map(row => ({ticker: row.ticker, type: "stock", shares: row.shares}))];
   for (const row of appended) {
     next.trading[row.ticker] ||= {orders: []};
     next.trading[row.ticker].orders.push(sourceOrder(row));
   }
-  applyOpeningPositions(next, previous, snapshot, openingPolicy(previous));
+  applyOpeningPositions(next, previous, snapshot, consent);
   return next;
 }
 function openingApply(previous, snapshot, appended = []) {
@@ -374,4 +374,135 @@ test("audited paths retain complete source digest and prior-ID protection", () =
   const previous = openingApply(f.previous, f.snapshot, [row]); f.snapshot.tradeUpdates.rows = [];
   const missing = copy(previous); missing.tradeSync = sync(f.snapshot);
   positionRejects(missing, previous, f.snapshot, "POSITION_TRADE_HISTORY_CHANGED");
+});
+
+const separationApproval = {version: 1, authorizationRef: "synthetic-current-snapshot-consent"};
+function separated(previous, snapshot, appended = []) {
+  const consent = {...openingPolicy(previous), currentSnapshotLedgerSeparation: separationApproval};
+  const next = openingCandidate(previous, snapshot, appended, consent);
+  applyPositionLifecycle(next, previous, snapshot, consent); return next;
+}
+function separationBaseline() {
+  const f = openingBaseline(); return {previous: separated(f.previous, f.snapshot), snapshot: f.snapshot};
+}
+const eventProof = (data, symbol) => data.positionLifecycle.eventProofBaseline.positions.find(p =>
+  p.key === data.positionLifecycle.positions.find(row => row.ticker === symbol).key);
+
+test("eight existing positions migrate silently using ledger proof and preserve every historical byte", () => {
+  const f = fixture(), symbols = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG", "HHH"];
+  f.previous.holdings = symbols.map(ticker => ({ticker, type: "stock", shares: 5}));
+  f.previous.trading = Object.fromEntries(symbols.map(ticker => [ticker, {orders: [{date: "2024-12-01", side: "buy", shares: 2, price: 9}]}]));
+  f.previous.historySnapshot = {asOf: "2025-01-10", holdings: copy(f.previous.holdings), trading: copy(f.previous.trading), income: copy(f.previous.income)};
+  f.snapshot.positions = symbols.map(ticker => ({accountId: account, securityId: `synthetic-${ticker}`, ticker, shares: 5}));
+  const previous = apply(f.previous, f.snapshot), saved = copy(previous);
+  f.snapshot.positions[0].shares = 8;
+  const next = separated(previous, f.snapshot);
+  assert.equal(next.positionLifecycle.positions.length, 8); assert.deepEqual(positionEffects(previous, next), []);
+  assert.equal(eventProof(next, "AAA").shares, 5); assert.equal(eventProof(next, "AAA").initialized, false);
+  assert.equal(next.positionLifecycle.positions.find(p => p.ticker === "AAA").shares, 8);
+  assert.deepEqual(next.historySnapshot, previous.historySnapshot); assert.deepEqual(next.income, previous.income);
+  for (const symbol of symbols) assert.deepEqual(next.trading[symbol].orders, previous.trading[symbol].orders);
+  assert.deepEqual(previous, saved); assert.deepEqual(separated(next, f.snapshot), next);
+});
+test("migration never treats imported IDs as applied orders and later reconciliation stays silent", () => {
+  const {previous, snapshot} = openingBaseline(), row = order();
+  snapshot.tradeUpdates.rows = [row]; snapshot.positions[0].shares += row.shares;
+  const first = separated(previous, snapshot), proof = eventProof(first, "DEMO");
+  assert.equal(first.tradeSync.transactions.length, 1); assert.equal(proof.shares, 5);
+  assert.deepEqual(proof.consumedTradeIds, []); assert.deepEqual(proof.pendingTradeIds, []);
+  const next = separated(first, snapshot, [row]);
+  assert.equal(eventProof(next, "DEMO").shares, 7); assert.equal(eventProof(next, "DEMO").initialized, true);
+  assert.deepEqual(positionEffects(first, next), []); assert.deepEqual(separated(next, snapshot), next);
+});
+test("holding arrives before its source ID and actual order: one later opened event is retained", () => {
+  const {previous, snapshot} = separationBaseline(), row = order({ticker: "NEW", securityId: "synthetic-delayed-open", shares: 3, amountCents: 3300});
+  snapshot.positions.push({accountId: account, securityId: row.securityId, ticker: row.ticker, shares: row.shares});
+  const holdingOnly = separated(previous, snapshot);
+  assert.deepEqual(positionEffects(previous, holdingOnly), []); assert.equal(eventProof(holdingOnly, "NEW").shares, 0);
+  snapshot.tradeUpdates.rows = [row];
+  const importedOnly = separated(holdingOnly, snapshot);
+  assert.deepEqual(positionEffects(holdingOnly, importedOnly), []); assert.deepEqual(eventProof(importedOnly, "NEW").consumedTradeIds, []);
+  const proved = separated(importedOnly, snapshot, [row]), events = positionEffects(importedOnly, proved);
+  assert.equal(events.length, 1); assert.equal(events[0].kind, "opened"); assert.equal(events[0].date, row.date);
+  assert.equal(eventProof(proved, "NEW").shares, 3); assert.deepEqual(separated(proved, snapshot), proved);
+});
+test("current close and reopen can publish first while later real orders prove each event once", () => {
+  const {previous, snapshot} = separationBaseline(); snapshot.positions = [];
+  const missing = separated(previous, snapshot); assert.equal(eventProof(missing, "DEMO").shares, 5);
+  assert.equal(missing.positionLifecycle.positions[0].status, "closed"); assert.deepEqual(positionEffects(previous, missing), []);
+  const sell = order({side: "sell", shares: 5, amountCents: -5500}); snapshot.tradeUpdates.rows = [sell];
+  const closed = separated(missing, snapshot, [sell]); assert.equal(positionEffects(missing, closed)[0].kind, "closed");
+  const buy = order({sourceId: "synthetic-reopen-later", date: "2025-01-12", shares: 4, amountCents: 4400});
+  snapshot.positions = [{accountId: account, securityId: buy.securityId, ticker: buy.ticker, shares: buy.shares}];
+  const holding = separated(closed, snapshot); assert.deepEqual(positionEffects(closed, holding), []);
+  snapshot.tradeUpdates.rows.push(buy);
+  const reopened = separated(holding, snapshot, [buy]); assert.equal(positionEffects(holding, reopened)[0].kind, "reopened");
+  assert.deepEqual(positionEffects(reopened, separated(reopened, snapshot)), []);
+});
+test("partial proof stays pending across imports and completes without losing its first buy", () => {
+  const {previous, snapshot} = separationBaseline(), first = order({ticker: "NEW", securityId: "synthetic-pending", sourceId: "synthetic-part-a"});
+  snapshot.positions.push({accountId: account, securityId: first.securityId, ticker: first.ticker, shares: 6}); snapshot.tradeUpdates.rows = [first];
+  const pending = separated(previous, snapshot, [first]), proof = eventProof(pending, "NEW");
+  assert.equal(proof.shares, 0); assert.deepEqual(proof.pendingTradeIds, [sourceOrder(first).id]); assert.deepEqual(proof.consumedTradeIds, []);
+  assert.deepEqual(separated(pending, snapshot), pending);
+  const second = order({...first, sourceId: "synthetic-part-b", date: "2025-01-12", shares: 4, amountCents: 4400}); snapshot.tradeUpdates.rows.push(second);
+  const next = separated(pending, snapshot, [second]), event = positionEffects(pending, next)[0];
+  assert.equal(event.kind, "opened"); assert.equal(event.date, first.date); assert.equal(eventProof(next, "NEW").consumedTradeIds.length, 2);
+  assert.deepEqual(eventProof(next, "NEW").pendingTradeIds, []);
+});
+test("a gap in one identity does not suppress an independently proved new position", () => {
+  const {previous, snapshot} = separationBaseline(); snapshot.positions[0].shares = 8;
+  const row = order({ticker: "NEW", securityId: "synthetic-independent"}); snapshot.tradeUpdates.rows = [row];
+  snapshot.positions.push({accountId: account, securityId: row.securityId, ticker: row.ticker, shares: row.shares});
+  const next = separated(previous, snapshot, [row]);
+  assert.equal(eventProof(next, "DEMO").shares, 5); assert.equal(positionEffects(previous, next)[0].ticker, "NEW");
+});
+test("ambiguous same-day round trip never consumes pending proof just because net quantity matches", () => {
+  const {previous, snapshot} = separationBaseline(), buy = order({ticker: "NEW", securityId: "synthetic-roundtrip"});
+  const sell = order({...buy, sourceId: "synthetic-roundtrip-sell", side: "sell", amountCents: -2200});
+  snapshot.tradeUpdates.rows = [buy, sell];
+  const next = separated(previous, snapshot, [buy, sell]), proof = eventProof(next, "NEW");
+  assert.equal(proof.shares, 0); assert.equal(proof.pendingTradeIds.length, 2); assert.deepEqual(proof.consumedTradeIds, []);
+  assert.deepEqual(positionEffects(previous, next), []); assert.deepEqual(separated(next, snapshot), next);
+});
+test("unambiguous different-day round trip proves both real boundary events", () => {
+  const {previous, snapshot} = separationBaseline(), buy = order({ticker: "NEW", securityId: "synthetic-dated-roundtrip"});
+  const sell = order({...buy, sourceId: "synthetic-dated-sell", date: "2025-01-12", side: "sell", amountCents: -2200});
+  snapshot.tradeUpdates.rows = [sell, buy];
+  const next = separated(previous, snapshot, [buy, sell]);
+  assert.deepEqual(positionEffects(previous, next).map(e => e.kind), ["opened", "closed"]);
+  assert.equal(eventProof(next, "NEW").consumedTradeIds.length, 2); assert.deepEqual(eventProof(next, "NEW").pendingTradeIds, []);
+  assert.deepEqual(separated(next, snapshot), next);
+});
+test("pending proof and consumed source identities remain immutable and source-bound", () => {
+  const {previous, snapshot} = separationBaseline(), row = order({ticker: "NEW", securityId: "synthetic-damaged-proof"});
+  snapshot.positions.push({accountId: account, securityId: row.securityId, ticker: row.ticker, shares: 3}); snapshot.tradeUpdates.rows = [row];
+  const pending = separated(previous, snapshot, [row]);
+  for (const change of [p => {p.pendingTradeIds = [];}, p => {p.pendingTradeIds.push(p.pendingTradeIds[0]);}, p => {p.shares = 3;}, p => {p.consumedTradeIds = ["0".repeat(64)];}]) {
+    const corrupt = copy(pending); change(eventProof(corrupt, "NEW"));
+    assert.throws(() => separated(corrupt, snapshot), {code: "POSITION_INVALID_EVENT_PROOF"});
+  }
+  const changed = copy(snapshot); changed.tradeUpdates.rows[0].price += 1;
+  assert.throws(() => separated(pending, changed), {code: "POSITION_TRADE_HISTORY_CHANGED"});
+  const incomplete = copy(snapshot); incomplete.tradeUpdates.allPagesFetched = false;
+  assert.throws(() => separated(pending, incomplete), {code: "POSITION_INCOMPLETE_TRADES"});
+});
+
+for (const [label, date] of [["older", "2025-01-11"], ["same-day", "2025-01-13"]])
+test(`${label} late order is retained without replaying it after an already proved close`, () => {
+  const {previous, snapshot} = separationBaseline();
+  const buy = order({sourceId: "synthetic-consumed-buy", date: "2025-01-12", shares: 5, amountCents: 5500});
+  const sell = order({sourceId: "synthetic-consumed-sell", date: "2025-01-13", side: "sell", shares: 10, amountCents: -11000});
+  snapshot.tradeUpdates.rows = [buy, sell]; snapshot.positions = [];
+  const closed = separated(previous, snapshot, [buy, sell]);
+  assert.equal(positionEffects(previous, closed)[0].kind, "closed");
+  const late = order({sourceId: `synthetic-late-${label}`, date, shares: 1, amountCents: 1100});
+  snapshot.tradeUpdates.rows.push(late);
+  snapshot.positions = [{accountId: account, securityId: late.securityId, ticker: late.ticker, shares: 1}];
+  const next = separated(closed, snapshot, [late]), proof = eventProof(next, "DEMO");
+  assert.equal(next.positionLifecycle.positions[0].shares, 1);
+  assert.deepEqual(positionEffects(closed, next), []); assert.equal(proof.shares, 0);
+  assert.deepEqual(proof.consumedTradeIds, eventProof(closed, "DEMO").consumedTradeIds);
+  assert.deepEqual(proof.pendingTradeIds, [sourceOrder(late).id]);
+  assert.deepEqual(separated(next, snapshot), next);
 });

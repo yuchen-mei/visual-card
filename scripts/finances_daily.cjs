@@ -105,7 +105,11 @@ function readMarketFile(filename){
 async function prepareCandidate({packet,existingBytes,password,html,marketContent,outputDirectory,now=Date.now()}){
  packet=JSON.parse(JSON.stringify(packet));existingBytes=Buffer.from(existingBytes);
  check(packet?.version===1&&typeof packet.operationId==="string"&&/^[a-zA-Z0-9:._-]{1,120}$/.test(packet.operationId),"INVALID_OPERATION");
- check(Object.keys(packet).every(k=>["version","operationId","sessionId","expectedHead","baselineSha256","snapshot","policy","marketBinding"].includes(k)),"UNEXPECTED_PACKET_FIELDS");
+ check(Object.keys(packet).every(k=>["version","operationId","sessionId","expectedHead","baselineSha256","snapshot","policy","marketBinding","planOnly"].includes(k)),"UNEXPECTED_PACKET_FIELDS");
+ if(packet.planOnly!==undefined){
+  check(packet.planOnly===true,"INVALID_PREPARATION_INTENT");
+  check(packet.policy?.openingPositionAuthorization!==undefined,"OPENING_PREPARATION_INTENT_REQUIRED");
+ }
  check(packet.snapshot?.mode==="assets","DAILY_MODE_MUST_BE_ASSETS");
  check(/^[a-f0-9]{40}$/.test(packet.expectedHead)&&/^[a-f0-9]{64}$/.test(packet.baselineSha256),"INVALID_BASELINE_BINDING");
  check(packet.baselineSha256===U.hash(existingBytes)&&packet.snapshot.previousCiphertextSha256===packet.baselineSha256,"BASELINE_CHANGED");
@@ -121,10 +125,15 @@ async function prepareCandidate({packet,existingBytes,password,html,marketConten
   writeMetadata(ownerPath,{version:1,pid:process.pid,token:lockToken});syncDirectory(dir);
   const oldEnvelope=JSON.parse(existingBytes),previous=U.decrypt(oldEnvelope,password);
   if(packet.policy?.openingPositionAuthorization!==undefined||previous.openingPositionAudit!==undefined)check(marketBinding,"MARKET_BINDING_REQUIRED");
-  const desired=U.buildAssetPayload(packet.snapshot,previous,{html,now,policy:packet.policy,market});
+  const requireNoOperationFiles=()=>check(![candidatePath,bindingPath,receiptPath].some(exists),"E_RECOVERY_REQUIRED");
+  const desired=U.buildAssetPayload(packet.snapshot,previous,{html,now,policy:packet.policy,market,planOnly:packet.planOnly===true});
   if(desired.openingPositionAudit!==undefined)check(marketBinding,"MARKET_BINDING_REQUIRED");
   const events=positionEffects(previous,desired);
   const effects=desired.positionLifecycle?{positionEvents:events}:{};
+  if(packet.planOnly===true){
+   requireNoOperationFiles();
+   return {...base,status:"planned",positionEvents:events,publishable:false,candidateCreated:false};
+  }
   const desiredBusiness=U.canonical(U.businessData(desired));
   const binding={version:1,operationHash,expectedHead:packet.expectedHead,baselineSha256:packet.baselineSha256,businessSha256:U.hash(desiredBusiness),...(marketBinding?{marketBinding}:{})};
   const hasCandidate=exists(candidatePath),hasBinding=exists(bindingPath),hasReceipt=exists(receiptPath);

@@ -213,3 +213,49 @@ test("recovery reruns the actual browser annual contract before reusing cipherte
  f.html=f.html.replace("function computeAnnualSummary() {",'function computeAnnualSummary() { throw new Error("SYNTHETIC_ANNUAL_REJECTION");');
  await assert.rejects(()=>D.prepareCandidate({...f,outputDirectory:dir}),{message:"SYNTHETIC_ANNUAL_REJECTION"});assert.ok(fs.readFileSync(first.candidatePath).equals(bytes));
 }));
+
+
+test("planning intent requires exact true and explicit opening authorization",async()=>{
+ for(const value of [false,null,"true",1])await privateRun(async dir=>{
+  const f=openingFixture();f.packet.planOnly=value;
+  await assert.rejects(()=>D.prepareCandidate({...f,outputDirectory:dir}),{message:"INVALID_PREPARATION_INTENT"});assert.deepEqual(fs.readdirSync(dir),[]);
+ });
+ await privateRun(async dir=>{
+  const f=fixture();f.packet.planOnly=true;
+  await assert.rejects(()=>D.prepareCandidate({...f,outputDirectory:dir}),{message:"OPENING_PREPARATION_INTENT_REQUIRED"});assert.deepEqual(fs.readdirSync(dir),[]);
+ });
+});
+test("opening planning creates no candidate and the same operation must later pass full validation",()=>privateRun(async dir=>{
+ const f=openingFixture();f.packet.planOnly=true;
+ const planned=await D.prepareCandidate({...f,outputDirectory:dir});
+ assert.equal(planned.status,"planned");assert.deepEqual(planned.positionEvents,[]);assert.equal(planned.publishable,false);assert.equal(planned.candidateCreated,false);
+ assert.deepEqual(fs.readdirSync(dir),[]);assert.equal(planned.expectedHead,f.packet.expectedHead);assert.equal(planned.baselineSha256,f.packet.baselineSha256);
+ delete f.packet.planOnly;const final=await D.prepareCandidate({...f,outputDirectory:dir});assert.equal(final.status,"validated");
+ f.packet.planOnly=true;await assert.rejects(()=>D.prepareCandidate({...f,outputDirectory:dir}),{message:"E_RECOVERY_REQUIRED"});
+}));
+test("planning skips only annual quote valuation and retains the unauthorised quantity failure",async()=>{
+ await privateRun(async dir=>{
+  const f=openingFixture();f.packet.planOnly=true;const market=JSON.parse(f.marketContent);market.prices.DEMO[0].date="2025-01-02";
+  f.marketContent=JSON.stringify(market);f.packet.marketBinding.candidateSha256=U.hash(f.marketContent);
+  assert.equal((await D.prepareCandidate({...f,outputDirectory:dir})).status,"planned");assert.deepEqual(fs.readdirSync(dir),[]);
+  delete f.packet.planOnly;await assert.rejects(()=>D.prepareCandidate({...f,outputDirectory:dir}),{message:"OPENING_PRICE_COVERAGE_REQUIRED"});assert.deepEqual(fs.readdirSync(dir),[]);
+ });
+ await privateRun(async dir=>{
+  const f=openingFixture();f.packet.planOnly=true;f.packet.snapshot.positions[0].shares=11;
+  await assert.rejects(()=>D.prepareCandidate({...f,outputDirectory:dir}),{message:"OPENING_CURRENT_QUANTITY_MISMATCH"});assert.deepEqual(fs.readdirSync(dir),[]);
+ });
+});
+test("any existing operation artifact prevents planning without overwriting it",async()=>{
+ for(const suffix of [".enc.json",".binding.json",".receipt.json"])await privateRun(async dir=>{
+  const f=openingFixture();f.packet.planOnly=true;
+  const file=path.join(dir,"candidate-"+U.hash(f.packet.operationId).slice(0,24)+suffix);fs.writeFileSync(file,"synthetic-existing",{mode:0o600});
+  await assert.rejects(()=>D.prepareCandidate({...f,outputDirectory:dir}),{message:"E_RECOVERY_REQUIRED"});
+  assert.equal(fs.readFileSync(file,"utf8"),"synthetic-existing");assert.deepEqual(fs.readdirSync(dir),[path.basename(file)]);
+ });
+});
+test("sealed CLI planning exits successfully and never creates candidate artifacts",()=>privateRun(async dir=>{
+ const f=openingFixture();f.packet.planOnly=true;const r=await nativeMarketRun(f,dir);
+ assert.equal(r.code,0);assert.equal(r.result.status,"planned");assert.equal(r.result.publishable,false);assert.equal(r.result.candidateCreated,false);assert.deepEqual(r.result.positionEvents,[]);
+ assert.equal(fs.readdirSync(dir).some(name=>name.startsWith("candidate-")),false);
+ assert.doesNotMatch(JSON.stringify(r),/synthetic-bank|synthetic-bridge-only|shares|amountCents/);
+}));

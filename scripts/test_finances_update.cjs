@@ -168,6 +168,13 @@ test("baseline race fails before encryption or write",async()=>{
   const snapshot=fixture();snapshot.previousCiphertextSha256="wrong";
   await assert.rejects(U.prepareUpdate({snapshot,existingBytes:Buffer.from("old"),password,html,now}),{message:"BASELINE_CHANGED"});
 });
+test("the encryption entry point rejects plan-only mode for every source mode",async()=>{
+ for(const mode of [undefined,"assets","basis-revision","history-review"]){
+  const snapshot=fixture();if(mode!==undefined)snapshot.mode=mode;
+  await assert.rejects(()=>U.prepareUpdate({snapshot,existingBytes:Buffer.from("not decrypted"),password,html,now,policy,planOnly:true,
+   encryptFn(){assert.fail("plan-only must never reach encryption");}}),{message:"PLAN_ONLY_NOT_ALLOWED_FOR_PREPARE"});
+ }
+});
 test("atomic write preserves old bytes on concurrent baseline change",()=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),"visual-card-test-")),file=path.join(dir,"data.enc.json");
   try {fs.writeFileSync(file,"newer");assert.throws(()=>U.writeAtomically(file,Buffer.from("old"),Buffer.from("candidate")),{message:"BASELINE_CHANGED_DURING_RUN"});assert.equal(fs.readFileSync(file,"utf8"),"newer");assert.deepEqual(fs.readdirSync(dir),["data.enc.json"]);}finally{fs.rmSync(dir,{recursive:true,force:true});}

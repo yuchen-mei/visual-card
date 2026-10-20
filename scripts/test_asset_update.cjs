@@ -4,6 +4,7 @@ const assert=require("node:assert/strict");
 const fs=require("node:fs"),path=require("node:path");
 const {test}=require("node:test");
 const U=require("./update_finances.cjs");
+const {positionEffects}=require("./finances_positions.cjs");
 const html=fs.readFileSync(path.join(__dirname,"..","index.html"),"utf8");
 const now=Date.parse("2026-10-18T03:00:00Z");
 const copy=x=>JSON.parse(JSON.stringify(x));
@@ -59,6 +60,186 @@ test("opening annual validation cannot silently drop another unpriced security",
  approved.openingPositionAuthorization.historySha256=U.hash(U.canonical(previous.historySnapshot));
  s.positions.push({accountId:"synthetic-broker",ticker:"EXTRA",type:"stock",shares:1,valueCents:1000,priceAsOf:"2026-10-17"});s.accounts[0].securitiesCents+=1000;s.accounts[0].totalCents+=1000;s.reconciliation.totalValueCents+=1000;
  assert.throws(()=>U.buildAssetPayload(s,previous,{html,now,policy:approved,market}),{message:"OPENING_MARKET_SECURITY_REQUIRED"});
+});
+function eventOpeningFixture(){
+ const f=openingFixture(),s=openingSnapshot();
+ f.approved.positionAccountIds=["synthetic-broker"];
+ s.positions[0].securityId="synthetic-demo-security";
+ const previous=U.buildAssetPayload(s,f.previous,{html,now,policy:f.approved,market:f.market});
+ return {...f,previous,snapshot:s};
+}
+function eventOrder(side="buy",sourceId="synthetic-new-buy",date="2026-10-10"){
+ return {accountId:"synthetic-broker",securityId:"synthetic-new-security",sourceId,date,ticker:"NEW",side,shares:2,price:30,amountCents:side==="buy"?6000:-6000,feesCents:0};
+}
+function eventSnapshot(s,row){
+ s.tradeUpdates.rows.push(row);
+ s.positions=s.positions.filter(p=>p.ticker!=="NEW");
+ if(row.side==="buy")s.positions.push({accountId:row.accountId,securityId:row.securityId,ticker:row.ticker,type:"stock",shares:row.shares,valueCents:6000,priceAsOf:"2026-10-17"});
+ s.accounts[0].cashCents-=row.amountCents;
+ s.accounts[0].securitiesCents=s.positions.reduce((sum,p)=>sum+p.valueCents,0);
+ s.accounts[0].totalCents=s.accounts[0].cashCents+s.accounts[0].securitiesCents;
+ s.reconciliation.cashCents=s.accounts.reduce((sum,a)=>sum+a.cashCents,0);
+ s.reconciliation.totalValueCents=s.accounts.reduce((sum,a)=>sum+a.totalCents,0);
+ return s;
+}
+test("plan-only opening output matches a fully valued payload without needing market prices",()=>{
+ const {previous,approved,market}=openingFixture(),s=openingSnapshot(),saved=U.canonical({previous,s,approved});
+ const plan=U.buildAssetPayload(s,previous,{html,now,policy:approved,planOnly:true});
+ const final=U.buildAssetPayload(s,previous,{html,now,policy:approved,market,planOnly:false});
+ assert.deepEqual(plan,final);assert.equal(U.canonical({previous,s,approved}),saved);
+ assert.equal(plan.planOnly,undefined);assert.equal(plan.status,undefined);
+ assert.deepEqual(plan.historySnapshot,previous.historySnapshot);assert.deepEqual(plan.performance,previous.performance);
+ assert.deepEqual(plan.trading.DEMO.orders,previous.trading.DEMO.orders);
+});
+test("planning open, close and reopen events precedes quotes but final valuation still requires them",()=>{
+ const f=eventOpeningFixture(),s=f.snapshot,fullMarket=copy(f.market);
+ fullMarket.prices.NEW=[{date:"2026-10-10",close:30},{date:"2026-10-17",close:30}];
+ let previous=f.previous;
+ const steps=[[eventOrder(),"opened"],[eventOrder("sell","synthetic-new-sale","2026-10-11"),"closed"],[eventOrder("buy","synthetic-new-rebuy","2026-10-12"),"reopened"]];
+ for(const [row,kind] of steps){
+  eventSnapshot(s,row);
+  const before=U.canonical({previous,s}),plan=U.buildAssetPayload(s,previous,{html,now,policy:f.approved,planOnly:true});
+  const events=positionEffects(previous,plan);
+  assert.equal(events.length,1);assert.equal(events[0].kind,kind);assert.equal(events[0].date,row.date);
+  assert.equal(events[0].firstKnownBuyDate,"2026-10-10");assert.equal(U.canonical({previous,s}),before);
+  assert.throws(()=>U.buildAssetPayload(s,previous,{html,now,policy:f.approved,market:f.market}),{message:"OPENING_MARKET_SECURITY_REQUIRED"});
+  const final=U.buildAssetPayload(s,previous,{html,now,policy:f.approved,market:fullMarket});
+  assert.deepEqual(final,plan);assert.deepEqual(positionEffects(previous,final),events);
+  assert.deepEqual(final.historySnapshot,previous.historySnapshot);assert.deepEqual(final.income,previous.income);
+  previous=final;
+ }
+ const repeated=U.buildAssetPayload(s,previous,{html,now,policy:f.approved,planOnly:true});
+ assert.deepEqual(repeated,previous);assert.deepEqual(positionEffects(previous,repeated),[]);
+});
+test("planning retains scope, coverage, balances, trade, opening and identity checks",()=>{
+ for(const [mutate,code] of [
+  [(s)=>{s.coverage.allPagesFetched=false;},"INCOMPLETE_ASSET_COVERAGE"],
+  [(s,p)=>{p.accountIds.push("synthetic-missing-account");},"APPROVED_ACCOUNT_SCOPE_MISMATCH"],
+  [(s)=>{s.accounts[0].totalCents++;},"ACCOUNT_BALANCE_MISMATCH"],
+  [(s)=>{s.tradeUpdates.allPagesFetched=false;},"TRADES_INCOMPLETE_SOURCE"],
+  [(s)=>{s.positions[0].shares++;},"OPENING_CURRENT_QUANTITY_MISMATCH"],
+  [(s)=>{s.positions[0].securityId="synthetic-replaced-identity";},"POSITION_SECURITY_CHANGED"]
+ ]){
+  const {previous,approved,snapshot:s}=eventOpeningFixture();mutate(s,approved);
+  const saved=U.canonical({previous,s,approved});
+  assert.throws(()=>U.buildAssetPayload(s,previous,{html,now,policy:approved,planOnly:true}),{message:code});
+  assert.equal(U.canonical({previous,s,approved}),saved);
+ }
+ const f=openingFixture();f.approved.openingPositionAuthorization.historySha256="0".repeat(64);
+ assert.throws(()=>U.buildAssetPayload(openingSnapshot(),f.previous,{html,now,policy:f.approved,planOnly:true}),{message:"OPENING_HISTORY_HASH_MISMATCH"});
+});
+test("planning only skips the annual market block and not subsequent browser balance checks",()=>{
+ const {previous,approved}=openingFixture(),s=openingSnapshot();
+ const changed=html.replace("function normalizeData(data) {","function normalizeData(data) {\n      data.holdings.find(h => h.ticker === 'CASH').value += 1;");
+ assert.ok(changed!==html);
+ assert.throws(()=>U.buildAssetPayload(s,previous,{html:changed,now,policy:approved,planOnly:true}),{message:"BROWSER_BALANCE_MISMATCH"});
+});
+test("plan-only accepts exact booleans and remains unavailable to preparation or encryption",async()=>{
+ const {previous,approved}=openingFixture(),s=openingSnapshot(),password="synthetic-planned-update";
+ for(const planOnly of [null,1,"true",{}])assert.throws(()=>U.buildAssetPayload(s,previous,{html,now,policy:approved,planOnly}),{message:"INVALID_PLAN_ONLY_OPTION"});
+ const bytes=Buffer.from(JSON.stringify(U.encrypt(previous,password)));s.previousCiphertextSha256=U.hash(bytes);const saved=Buffer.from(bytes);
+ const plan=U.buildAssetPayload(s,previous,{html,now,policy:approved,planOnly:true});assert.ok(plan.openingPositionAudit);
+ await assert.rejects(()=>U.prepareUpdate({snapshot:s,existingBytes:bytes,password,html,now,policy:approved,planOnly:true,encryptFn(){assert.fail("planning must not encrypt");}}),{message:"PLAN_ONLY_NOT_ALLOWED_FOR_PREPARE"});
+ await assert.rejects(()=>U.prepareUpdate({snapshot:s,existingBytes:bytes,password,html,now,policy:approved,encryptFn(){assert.fail("missing final prices must not encrypt");}}),{message:"OPENING_MARKET_REQUIRED"});
+ assert.ok(bytes.equals(saved));
+});
+function separatedReturnFixture(){
+ const f=openingFixture(),s=openingSnapshot();
+ f.approved.currentSnapshotLedgerSeparation={version:1,authorizationRef:"synthetic-current-holdings-separation"};
+ f.previous.userConfirmedCapital={principalCents:112000,scope:"brokerage",effectiveDate:null,source:"user-confirmed",updatePolicy:"explicit-user-only"};
+ f.previous.userConfirmedReturnMethod={version:1,method:"principal-minus-buying-power",source:"user-confirmed",sourceMessageId:"synthetic-return-method",
+  totalPrincipalCents:112000,providerCashCents:100000,buyingPowerSupplementCents:0,supplementState:"reflected-in-provider-snapshot",
+  effectiveBuyingPowerCents:100000,investedPrincipalCents:12000,holdingCostBasisCents:12500,unrealizedGainCents:2500,nonHoldingIncomeCents:500,
+  confirmedCdInterestIncludedCents:2500,classification:"user-approved-approximation",incomeDatesInvented:false};
+ f.previous.performance.items.unshift({label:"股票 / ETF 浮盈",gain:25,principal:125,currentValue:150,returnPct:20});
+ s.positions[0].costBasisCents=12500;
+ return {...f,snapshot:s};
+}
+function sourceQuantityGap(s){
+ s.positions[0].shares=6;s.positions[0].valueCents=18000;s.positions[0].costBasisCents=15000;
+ s.accounts[0].securitiesCents=18000;s.accounts[0].totalCents=s.accounts[0].cashCents+18000;
+ s.reconciliation.totalValueCents=s.accounts.reduce((sum,a)=>sum+a.totalCents,0);
+}
+test("authorized current holdings and returns remain independent of the fixed real-order annual ledger",()=>{
+ const f=separatedReturnFixture(),s=f.snapshot;
+ const aligned=U.buildAssetPayload(s,f.previous,{html,now,policy:f.approved,market:f.market});
+ sourceQuantityGap(s);const previousBytes=U.canonical(f.previous);
+ const next=U.buildAssetPayload(s,f.previous,{html,now,policy:f.approved,market:f.market});
+ const h=next.holdings.find(h=>h.ticker==="DEMO");assert.equal(h.shares,6);assert.equal(h.value,180);assert.equal(h.costBasis,150);
+ assert.equal(next.performance.totalCurrentValue,180);assert.equal(next.performance.totalPrincipal,120);assert.equal(next.performance.totalGain,60);
+ assert.deepEqual(next.userConfirmedCapital,f.previous.userConfirmedCapital);
+ assert.deepEqual(next.quantityReconciliation.differences,[{ticker:"DEMO",ledgerShares:5,holdingShares:6}]);
+ assert.equal(next.quantityReconciliation.sourceAsOf,null);assert.equal(next.quantityReconciliation.sourceDateStatus,"unknown");
+ assert.equal(next.trading.DEMO.openingPosition.shares,2);assert.deepEqual(next.trading.DEMO.orders,f.previous.trading.DEMO.orders);
+ assert.deepEqual(next.historySnapshot,f.previous.historySnapshot);assert.deepEqual(next.income,f.previous.income);
+ const annual=data=>{const ui=U.browserContract(html);ui.state.raw=data;ui.state.data=ui.normalizeData(data);ui.state.marketPrices=f.market;
+  return ui.computeAnnualSummary().years.map(y=>({year:y.year,startValue:y.startValue,endValue:y.endValue,stockPnl:y.stockPnl,income:y.income,pnl:y.pnl}));};
+ assert.equal(U.canonical(annual(next)),U.canonical(annual(aligned)));assert.equal(annual(next).at(-1).endValue,150);
+ assert.equal(U.canonical(f.previous),previousBytes);
+ const unauthorized=copy(f.approved);delete unauthorized.currentSnapshotLedgerSeparation;
+ assert.throws(()=>U.buildAssetPayload(s,f.previous,{html,now,policy:unauthorized,market:f.market}),{message:"OPENING_CURRENT_QUANTITY_MISMATCH"});
+});
+test("separation planning produces the same private audit but final annual prices remain mandatory",()=>{
+ const f=separatedReturnFixture();sourceQuantityGap(f.snapshot);
+ const plan=U.buildAssetPayload(f.snapshot,f.previous,{html,now,policy:f.approved,planOnly:true});
+ const final=U.buildAssetPayload(f.snapshot,f.previous,{html,now,policy:f.approved,market:f.market});
+ assert.deepEqual(plan,final);
+ assert.throws(()=>U.buildAssetPayload(f.snapshot,f.previous,{html,now,policy:f.approved}),{message:"OPENING_MARKET_REQUIRED"});
+ const broken=copy(f.snapshot);broken.accounts[0].totalCents++;
+ assert.throws(()=>U.buildAssetPayload(broken,f.previous,{html,now,policy:f.approved,planOnly:true}),{message:"ACCOUNT_BALANCE_MISMATCH"});
+});
+test("encrypted separation authorization survives roundtrip and repeat retrieval never re-encrypts",async()=>{
+ const f=separatedReturnFixture();sourceQuantityGap(f.snapshot);const password="synthetic-separated-ledger";
+ const bytes=Buffer.from(JSON.stringify(U.encrypt(f.previous,password)));f.snapshot.previousCiphertextSha256=U.hash(bytes);
+ const first=await U.prepareUpdate({snapshot:f.snapshot,existingBytes:bytes,password,html,now,policy:f.approved,market:f.market});
+ assert.equal(first.status,"changed");const decoded=U.decrypt(JSON.parse(first.bytes),password);
+ assert.equal(decoded.quantityReconciliation.matched,false);assert.equal(decoded.holdings.find(h=>h.ticker==="DEMO").shares,6);
+ const dailyPolicy=copy(policy);f.snapshot.previousCiphertextSha256=U.hash(first.bytes);f.snapshot.fetchedAt="2026-10-19T02:00:00Z";
+ const next=await U.prepareUpdate({snapshot:f.snapshot,existingBytes:first.bytes,password,html,now:now+86400000,policy:dailyPolicy,market:f.market,
+  encryptFn(){assert.fail("unchanged quantities and audit must not encrypt");}});
+ assert.equal(next.status,"unchanged");
+});
+test("late real orders reconcile already-current shares without rolling opening or repeating current gain",()=>{
+ const f=separatedReturnFixture();sourceQuantityGap(f.snapshot);
+ const previous=U.buildAssetPayload(f.snapshot,f.previous,{html,now,policy:f.approved,market:f.market});
+ f.snapshot.tradeUpdates.rows=[{accountId:"synthetic-broker",securityId:"synthetic-demo-security",sourceId:"synthetic-late-real-buy",date:"2026-10-10",
+  ticker:"DEMO",side:"buy",shares:1,price:30,amountCents:3000,feesCents:0}];
+ const next=U.buildAssetPayload(f.snapshot,previous,{html,now,policy,market:f.market});
+ assert.equal(previous.quantityReconciliation.matched,false);assert.equal(next.quantityReconciliation.matched,true);
+ assert.deepEqual(next.quantityReconciliation.differences,[]);assert.deepEqual(next.holdings,previous.holdings);
+ assert.deepEqual(next.performance,previous.performance);assert.deepEqual(next.trading.DEMO.openingPosition,previous.trading.DEMO.openingPosition);
+ assert.deepEqual(next.trading.DEMO.orders.slice(0,-1),previous.trading.DEMO.orders);assert.equal(next.trading.DEMO.orders.length,previous.trading.DEMO.orders.length+1);
+ assert.deepEqual(next.historySnapshot,previous.historySnapshot);
+ assert.deepEqual(U.buildAssetPayload(f.snapshot,next,{html,now,policy,market:f.market}),next);
+});
+test("actual asset pipeline defers unproved source changes and emits delayed open, close and reopen once",()=>{
+ const f=separatedReturnFixture(),s=f.snapshot;sourceQuantityGap(s);
+ f.approved.positionAccountIds=["synthetic-broker"];s.positions[0].securityId="synthetic-demo-security";
+ let previous=U.buildAssetPayload(s,f.previous,{html,now,policy:f.approved,market:f.market});
+ assert.deepEqual(positionEffects(f.previous,previous),[]);
+ s.tradeUpdates.rows.push({accountId:"synthetic-broker",securityId:"synthetic-demo-security",sourceId:"synthetic-baseline-catchup",date:"2026-10-10",
+  ticker:"DEMO",side:"buy",shares:1,price:30,amountCents:3000,feesCents:0});
+ const baseline=U.buildAssetPayload(s,previous,{html,now,policy:f.approved,market:f.market});
+ assert.deepEqual(positionEffects(previous,baseline),[]);assert.equal(baseline.quantityReconciliation.matched,true);previous=baseline;
+ const market=copy(f.market);market.prices.NEW=[{date:"2026-10-11",close:30},{date:"2026-10-17",close:30}];
+ for(const [row,kind] of [[eventOrder("buy","synthetic-delayed-open","2026-10-11"),"opened"],
+  [eventOrder("sell","synthetic-delayed-close","2026-10-12"),"closed"],[eventOrder("buy","synthetic-delayed-reopen","2026-10-13"),"reopened"]]){
+  eventSnapshot(s,row);s.tradeUpdates.rows.pop();
+  for(const p of s.positions)if(p.ticker==="NEW")p.costBasisCents=5000;
+  const observed=U.buildAssetPayload(s,previous,{html,now,policy:f.approved,market});
+  assert.deepEqual(positionEffects(previous,observed),[]);assert.equal(observed.quantityReconciliation.matched,false);
+  assert.deepEqual(observed.trading,previous.trading);
+  s.tradeUpdates.rows.push(row);
+  const plan=U.buildAssetPayload(s,observed,{html,now,policy:f.approved,planOnly:true});
+  const events=positionEffects(observed,plan);assert.equal(events.length,1);assert.equal(events[0].kind,kind);assert.equal(events[0].date,row.date);
+  assert.equal(plan.quantityReconciliation.matched,true);assert.deepEqual(plan.performance,observed.performance);
+  assert.throws(()=>U.buildAssetPayload(s,observed,{html,now,policy:f.approved,market:f.market}),{message:"OPENING_MARKET_SECURITY_REQUIRED"});
+  const final=U.buildAssetPayload(s,observed,{html,now,policy:f.approved,market});assert.deepEqual(final,plan);
+  assert.deepEqual(final.trading.DEMO.openingPosition,baseline.trading.DEMO.openingPosition);
+  assert.deepEqual(final.historySnapshot,baseline.historySnapshot);
+  const repeated=U.buildAssetPayload(s,final,{html,now,policy:f.approved,market});assert.deepEqual(repeated,final);assert.deepEqual(positionEffects(final,repeated),[]);
+  previous=final;
+ }
 });
 function holdingsSnapshot(){
  const s=snapshot();s.schemaVersion=3;

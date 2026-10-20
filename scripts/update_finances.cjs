@@ -9,7 +9,7 @@ const crypto = require("node:crypto");
 const vm = require("node:vm");
 const {applyTradeUpdates} = require("./finances_trades.cjs");
 const {applyPositionLifecycle} = require("./finances_positions.cjs");
-const {applyOpeningPositions, validateOpeningQuantities} = require("./finances_opening.cjs");
+const {applyOpeningPositions, validateOpeningQuantities, resolveQuantitySeparation} = require("./finances_opening.cjs");
 const ROOT = path.resolve(__dirname, "..");
 const DAY = 86400000;
 class ValidationError extends Error {}
@@ -581,7 +581,8 @@ function buildBasisRevisionPayload(snapshot, previous, {html, policy} = {}) {
   same(normalized.userConfirmedCapital, confirmed, "BROWSER_MANUAL_CAPITAL_MISMATCH");
   return next;
 }
-function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy, market} = {}) {
+function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy, market, planOnly = false} = {}) {
+  requireThat(typeof planOnly === "boolean", "INVALID_PLAN_ONLY_OPTION");
   requireThat([2, 3].includes(snapshot?.schemaVersion) && snapshot.mode === "assets" && snapshot.source === "Finances" && snapshot.currency === "USD", "UNSUPPORTED_ASSET_SCHEMA");
   const holdingsValuation = snapshot.schemaVersion === 3;
   fresh(snapshot.fetchedAt, now);
@@ -663,14 +664,19 @@ function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy, 
   if(previous.userConfirmedCapital)validateManualCapital(previous.userConfirmedCapital);
   try { applyTradeUpdates(next, previous, snapshot); }
   catch (error) { throw new ValidationError(/^[A-Z][A-Z_0-9]{0,79}$/.test(error.code) ? error.code : "TRADE_UPDATE_INVALID"); }
-  try { applyOpeningPositions(next, previous, snapshot, policy); validateOpeningQuantities(next, snapshot); }
+  try {
+    applyOpeningPositions(next, previous, snapshot, policy);
+    validateOpeningQuantities(next, snapshot, {currentSnapshotLedgerSeparation: resolveQuantitySeparation(previous, policy)});
+  }
   catch (error) { throw new ValidationError(/^[A-Z][A-Z_0-9]{0,79}$/.test(error.code) ? error.code : "OPENING_UPDATE_INVALID"); }
   try { applyPositionLifecycle(next, previous, snapshot, policy); }
   catch (error) { throw new ValidationError(/^[A-Z][A-Z_0-9]{0,79}$/.test(error.code) ? error.code : "POSITION_UPDATE_INVALID"); }
   applyUserConfirmedReturnMethod(next, previous, snapshot, {html, policy});
   // Verify through the actual production display path, with old history frozen.
   const ui=browserContract(html), normalized=ui.normalizeData(clone(next));
-  if (next.openingPositionAudit !== undefined) {
+  // Planning proves source facts and lifecycle events so their public quotes can
+  // be fetched. It is not a completed valuation or an encryptable candidate.
+  if (next.openingPositionAudit !== undefined && !planOnly) {
     requireThat(market && typeof market === "object" && market.prices, "OPENING_MARKET_REQUIRED");
     try {
       require("./finances_market.cjs").validateMarketData(market);
@@ -716,7 +722,8 @@ function businessData(data) {
   if(copy.assetSnapshot)delete copy.assetSnapshot.retrievedAt;
   return copy;
 }
-async function prepareUpdate({snapshot, existingBytes, password, html, market, now, policy, encryptFn = encrypt}) {
+async function prepareUpdate({snapshot, existingBytes, password, html, market, now, policy, planOnly = false, encryptFn = encrypt}) {
+  requireThat(planOnly === false, "PLAN_ONLY_NOT_ALLOWED_FOR_PREPARE");
   requireThat(typeof snapshot?.previousCiphertextSha256 === "string" && snapshot.previousCiphertextSha256 === hash(existingBytes), "BASELINE_CHANGED");
   const envelope = JSON.parse(existingBytes.toString("utf8"));
   const previous = decrypt(envelope, password);

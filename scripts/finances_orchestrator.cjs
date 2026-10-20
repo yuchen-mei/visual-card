@@ -76,10 +76,61 @@
   const rangesContent=same(finalRanges,ranges)?oldRanges.content:pretty(finalRanges);
   const marketSha256=await deps.hash(marketContent),rangesSha256=await deps.hash(rangesContent);
   requireThat(typeof marketSha256==="string"&&/^[a-f0-9]{64}$/.test(marketSha256)&&typeof rangesSha256==="string"&&/^[a-f0-9]{64}$/.test(rangesSha256),"E_OPENING_MARKET_HASH");
-  return {market:finalMarket,ranges:finalRanges,marketContent,
+  return {market:finalMarket,ranges:finalRanges,marketContent,baselineFiles:copy(base.files),
    marketBinding:{baselineSha256:oldMarket.sha256,candidateSha256:marketSha256},
    changed:marketContent!==oldMarket.content||rangesContent!==oldRanges.content,
    files:[{path:RANGES_PATH,content:rangesContent,sha256:rangesSha256},{path:MARKET_PATH,content:marketContent,sha256:marketSha256}]};
+ }
+ async function completeOpeningEventMarket(opening,events,end,deps){
+  const M=deps.market,plan=M.planRanges({ranges:copy(opening.ranges),prices:copy(opening.market.prices),events:copy(events)});
+  const oldMarket=opening.baselineFiles.find(file=>file.path===MARKET_PATH),oldRanges=opening.baselineFiles.find(file=>file.path===RANGES_PATH);
+  const originalMarket=M.parsePublicJSON(oldMarket.content),originalRanges=M.parsePublicJSON(oldRanges.content);
+  const subset={};
+  for(const event of events){
+   if(["SPY","QQQ"].includes(event.ticker))requireThat(Object.hasOwn(originalRanges,event.ticker),"E_OPENING_PROTECTED_BENCHMARK");
+   if(event.kind==="closed")continue;
+   const rows=opening.market.prices[event.ticker];
+   // Benchmark monitoring starts stay fixed, but their real earlier trades can
+   // still require historical quotes for the final accounting validation.
+   const start=["SPY","QQQ"].includes(event.ticker)
+    ? [plan.ranges[event.ticker],event.firstKnownBuyDate,...(rows?[rows[0].date]:[])].sort()[0]
+    : plan.ranges[event.ticker];
+   if(!rows||rows[0].date>start||rows.at(-1).date<event.date)subset[event.ticker]=start;
+  }
+  const market=copy(opening.market);
+  if(Object.keys(subset).length){
+   requireThat(typeof deps.local.prepareMarket==="function"&&end>=market.asOf,"E_OPENING_MARKET_DEPENDENCIES");
+   // The local fetcher binds this content to the immutable production file.
+   // Keep the intermediate opening additions only in our in-memory merge.
+   const refreshed=copy(await deps.local.prepareMarket({ranges:copy(subset),existingContent:oldMarket.content,end}));
+   requireThat(refreshed.status==="validated"&&typeof refreshed.rangesContent==="string"&&typeof refreshed.marketContent==="string","E_OPENING_MARKET_RECEIPT");
+   const ranges=M.validateRanges(M.parsePublicJSON(refreshed.rangesContent)),observed=M.validateMarketData(M.parsePublicJSON(refreshed.marketContent));
+   requireThat(same(ranges,subset)&&observed.asOf===end,"E_OPENING_MARKET_RECEIPT");
+   requireThat(Object.keys(observed.prices).every(ticker=>Object.hasOwn(originalMarket.prices,ticker)||Object.hasOwn(subset,ticker)),"E_OPENING_MARKET_SCOPE");
+   for(const [ticker,rows]of Object.entries(originalMarket.prices))if(!Object.hasOwn(subset,ticker))requireThat(same(observed.prices[ticker],rows),"E_OPENING_MARKET_SCOPE");
+   let added=false;
+   for(const [ticker,start]of Object.entries(subset)){
+    requireThat(Array.isArray(observed.prices[ticker]),"E_OPENING_MARKET_RECEIPT");
+    const oldRows=market.prices[ticker]||[],dates=new Set(oldRows.map(row=>row.date));
+    const extra=observed.prices[ticker].filter(row=>row.date>=start&&row.date<=end&&!dates.has(row.date));
+    market.prices[ticker]=[...copy(oldRows),...extra].sort((a,b)=>a.date.localeCompare(b.date));
+    if(extra.length)added=true;
+   }
+   if(added){market.asOf=end;market.generatedAt=observed.generatedAt;}
+  }
+  M.validateMarketData(market);M.validateRanges(plan.ranges);
+  const marketContent=same(market,originalMarket)?oldMarket.content:same(market,opening.market)?opening.marketContent:pretty(market);
+  const rangesContent=same(plan.ranges,originalRanges)?oldRanges.content:pretty(plan.ranges);
+  const marketSha256=await deps.hash(marketContent),rangesSha256=await deps.hash(rangesContent);
+  requireThat([marketSha256,rangesSha256].every(value=>typeof value==="string"&&/^[a-f0-9]{64}$/.test(value)),"E_OPENING_MARKET_HASH");
+  return {...opening,market,ranges:copy(plan.ranges),marketContent,
+   marketBinding:{baselineSha256:oldMarket.sha256,candidateSha256:marketSha256},
+   changed:marketContent!==oldMarket.content||rangesContent!==oldRanges.content,
+   files:[{path:RANGES_PATH,content:rangesContent,sha256:rangesSha256},{path:MARKET_PATH,content:marketContent,sha256:marketSha256}]};
+ }
+ function validateLocalReceipt(prepared,request,baseline,market){
+  requireThat(prepared?.operationId===request.operationId&&prepared.expectedHead===baseline.head&&prepared.baselineSha256===baseline.sha256,"E_LOCAL_RECEIPT");
+  if(market)requireThat(prepared.validatedMarketSha256===market.marketBinding.candidateSha256,"E_OPENING_MARKET_BINDING");
  }
  // Private raw IDs come from the live response only after matching an independent
  // approved hash set. New/missing asset accounts require review, never auto-adopt.
@@ -121,6 +172,9 @@
    for(const name of ["hash","now"])requireThat(typeof deps?.[name]==="function","E_DEPENDENCIES");
    requireThat(typeof deps?.finances?.getLinkedAccounts==="function"&&typeof deps.finances.query==="function"&&typeof deps.local?.prepare==="function"&&typeof deps.source?.normalizeAssetSnapshot==="function"&&typeof deps.source?.normalizeTradeUpdates==="function"&&typeof deps.publisher?.readBaseline==="function"&&typeof deps.publisher.publishData==="function","E_DEPENDENCIES");
    const opening=openingOptions(deps);
+   const separation=deps.currentSnapshotLedgerSeparation===undefined?undefined:copy(deps.currentSnapshotLedgerSeparation);
+   if(separation!==undefined)requireThat(object(separation)&&Object.keys(separation).sort().join(",")==="authorizationRef,version"&&separation.version===1
+    &&typeof separation.authorizationRef==="string"&&separation.authorizationRef.trim().length>0&&separation.authorizationRef.length<=512&&!/[\x00-\x1f\x7f]/.test(separation.authorizationRef),"E_CURRENT_SNAPSHOT_AUTHORIZATION_INVALID");
    phase="github_read";
    const baseline=copy(await deps.publisher.readBaseline(deps.publication));
    phase="finances_read";
@@ -129,6 +183,7 @@
    const holdingsResponses=await readHoldings(accounts,deps);
    const policy={accountIds:accounts.map(a=>a.account_id)};
    if(opening.authorization!==undefined)policy.openingPositionAuthorization=copy(opening.authorization);
+   if(separation!==undefined)policy.currentSnapshotLedgerSeparation=copy(separation);
    if(deps.positionAccountHashes!==undefined){
     const scope=copy(deps.positionAccountHashes),investment=accounts.filter(a=>a.type==="investment");
     requireThat(Array.isArray(scope)&&scope.length===1&&scope.every(h=>/^[a-f0-9]{64}$/.test(h)),"E_POSITION_SCOPE");
@@ -165,16 +220,29 @@
     requireThat(same(openingStartSnapshot,openingComparison(endingSnapshot)),"E_SOURCE_SNAPSHOT_CHANGED_DURING_READ");
     phase="market_preparation";openingMarket=await prepareOpeningMarket(baseline,opening.ranges,deps);
    }
+   const prepareArgs=()=>({operationId:request.operationId,baseline:copy(baseline),snapshot:copy(snapshot),policy:copy(policy),
+    ...(openingMarket?{marketContent:openingMarket.marketContent,marketBinding:copy(openingMarket.marketBinding)}:{})});
+   let plannedEvents;
+   if(openingMarket&&deps.positionAccountHashes!==undefined){
+    phase="local_validation";
+    requireThat(typeof deps.market.validateEvents==="function"&&typeof deps.release?.publishRelease==="function","E_POSITION_RECEIPT");
+    const planned=copy(await deps.local.prepare({...prepareArgs(),planOnly:true}));
+    validateLocalReceipt(planned,request,baseline,openingMarket);
+    requireThat(planned.status==="planned"&&planned.publishable===false&&planned.candidateCreated===false
+     &&["content","candidatePath","validatedSha256"].every(key=>!Object.hasOwn(planned,key)),"E_POSITION_PLAN_RECEIPT");
+    plannedEvents=copy(deps.market.validateEvents(planned.positionEvents));
+    phase="market_preparation";
+    openingMarket=await completeOpeningEventMarket(openingMarket,plannedEvents,snapshot.fetchedAt.slice(0,10),deps);
+   }
    phase="local_validation";
-   const prepared=copy(await deps.local.prepare({operationId:request.operationId,baseline:copy(baseline),snapshot:copy(snapshot),policy:copy(policy),
-    ...(openingMarket?{marketContent:openingMarket.marketContent,marketBinding:copy(openingMarket.marketBinding)}:{})}));
-   requireThat(prepared?.operationId===request.operationId&&prepared.expectedHead===baseline.head&&prepared.baselineSha256===baseline.sha256,"E_LOCAL_RECEIPT");
-   if(openingMarket)requireThat(prepared.validatedMarketSha256===openingMarket.marketBinding.candidateSha256,"E_OPENING_MARKET_BINDING");
+   const prepared=copy(await deps.local.prepare(prepareArgs()));
+   validateLocalReceipt(prepared,request,baseline,openingMarket);
    let events=[];
    if(deps.positionAccountHashes!==undefined){
     requireThat(typeof deps.market?.validateEvents==="function"&&typeof deps.release?.publishRelease==="function"&&Array.isArray(prepared.positionEvents),"E_POSITION_RECEIPT");
     events=copy(deps.market.validateEvents(prepared.positionEvents));
    }else requireThat(prepared.positionEvents===undefined,"E_POSITION_SCOPE");
+   if(plannedEvents!==undefined)requireThat(same(events,plannedEvents),"E_POSITION_PLAN_CHANGED");
    if(prepared.status==="unchanged"){
     requireThat(events.length===0,"E_POSITION_RECEIPT");
     requireThat(!openingMarket?.changed,"E_OPENING_MARKET_WITHOUT_DATA_CHANGE");
@@ -187,11 +255,7 @@
     requireThat(typeof deps.release?.publishRelease==="function","E_OPENING_MARKET_DEPENDENCIES");
     files=[{path:"data.enc.json",content:prepared.content,sha256:prepared.validatedSha256},...openingMarket.files];
    }
-   if(events.length&&openingMarket){
-    phase="market_preparation";
-    const plan=deps.market.planRanges({ranges:copy(openingMarket.ranges),prices:copy(openingMarket.market.prices),events:copy(events)});
-    requireThat(plan.changed===false,"E_OPENING_EVENT_MARKET_REVALIDATION_REQUIRED");
-   }else if(events.length){
+   if(events.length&&!openingMarket){
     phase="market_preparation";
     const marketBase=copy(await deps.market.readMarketBaseline(baseline.head,deps.publication));
     requireThat(marketBase.head===baseline.head,"E_MARKET_BASELINE");

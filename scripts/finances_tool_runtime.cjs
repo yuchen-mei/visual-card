@@ -30,7 +30,7 @@
    for(let i=0;i<attempts;i++){
     if(!object(r)||(r.output!==undefined&&typeof r.output!=="string")||(r.exit_code!==undefined&&!Number.isInteger(r.exit_code)))fail("E_RUNTIME_RESPONSE");
     if(r.session_id!==undefined&&r.session_id!==pinned)fail("E_RUNTIME_SESSION");
-    if(r.exit_code!==undefined&&onExit)onExit();
+    if(r.exit_code!==undefined&&onExit)onExit(r.exit_code);
     output+=r.output||"";if(output.length>maxChars)fail("E_RUNTIME_OUTPUT");
     const lines=output.trim().split(/\r?\n/).filter(Boolean);
     if(lines.length===1){
@@ -61,9 +61,9 @@
    async load(operationId){const r=await rpc("load",{operationId});return r.record===undefined?r.result:r.record;},
    async save(operationId,record){await rpc("save",{operationId,record});}
   };
-  async function prepare({operationId,baseline,snapshot,policy,marketContent,marketBinding}){
-   let stage="baseline_write",nativeSession,exited=false,nativeAttempted=false;
-   const noteExit=()=>{exited=true;};
+  async function prepare({operationId,baseline,snapshot,policy,marketContent,marketBinding,planOnly}){
+   let stage="baseline_write",nativeSession,exited=false,exitCode,nativeAttempted=false;
+   const noteExit=code=>{exited=true;exitCode=code;};
    async function stopOwnSession(){
     if(exited)return "already_exited";
     if(nativeSession===undefined)return nativeAttempted?"unavailable":"not_started";
@@ -79,6 +79,7 @@
     return "uncertain";
    }
    try{
+    if((planOnly!==undefined&&planOnly!==true)||(planOnly&&!config.passwordFile))fail("E_PREPARE_MODE");
     if(marketContent!==undefined||marketBinding!==undefined){
      if(!config.passwordFile||typeof marketContent!=="string"||!object(marketBinding)||Object.keys(marketBinding).sort().join(",")!=="baselineSha256,candidateSha256"||![marketBinding.baselineSha256,marketBinding.candidateSha256].every(v=>typeof v==="string"&&/^[a-f0-9]{64}$/.test(v))||transport.hash(marketContent)!==marketBinding.candidateSha256)fail("E_MARKET_BINDING");
      try{market.validateMarketData(market.parsePublicJSON(marketContent));}catch{fail("E_MARKET_BINDING");}
@@ -106,7 +107,7 @@
     if(nativeSession===undefined||exited)fail("E_NATIVE_PROCESS");
     if(header.expectedHead!==baseline.head||header.baselineSha256!==baseline.sha256)fail("E_NATIVE_BASELINE");
     stage="seal";
-    const sealed=transport.seal({version:1,operationId,sessionId:header.sessionId,expectedHead:baseline.head,baselineSha256:baseline.sha256,snapshot,policy,...(marketBinding?{marketBinding}: {})},header);
+    const sealed=transport.seal({version:1,operationId,sessionId:header.sessionId,expectedHead:baseline.head,baselineSha256:baseline.sha256,snapshot,policy,...(marketBinding?{marketBinding}: {}),...(planOnly?{planOnly:true}:{})},header);
     stage="native_submit";
     const submitted=await tools.write_stdin({session_id:nativeSession,chars:JSON.stringify(sealed)+"\n",yield_time_ms:1000,max_output_tokens:2000});
     stage="native_result";
@@ -114,6 +115,16 @@
     if(result.status==="failed")fail((config.passwordFile&&/^[A-Z][A-Z_0-9]{0,79}$/.test(result.code))||nativeCodes.has(result.code)?result.code:"E_NATIVE_VALIDATION");
     if(result.operationId!==operationId||result.expectedHead!==baseline.head||result.baselineSha256!==baseline.sha256)fail("E_NATIVE_RECEIPT");
     if(marketBinding&&result.validatedMarketSha256!==marketBinding.candidateSha256)fail("E_MARKET_BINDING");
+    if(planOnly){
+     if(result.status!=="planned"||result.candidateCreated!==false||result.publishable!==false||result.candidatePath!==undefined||!Array.isArray(result.positionEvents))fail("E_PLAN_RECEIPT");
+     for(let i=0;!exited&&i<3;i++){
+      const ended=await tools.write_stdin({session_id:nativeSession,chars:"",yield_time_ms:1000,max_output_tokens:100});
+      if(!object(ended)||(ended.session_id!==undefined&&ended.session_id!==nativeSession)||(ended.output||"").trim())fail("E_PLAN_PROCESS");
+      if(Number.isInteger(ended.exit_code))noteExit(ended.exit_code);
+     }
+     if(!exited||exitCode!==0)fail("E_PLAN_PROCESS");
+     return result;
+    }
     if(result.status==="unchanged")return result;
     if(result.status!=="validated"||typeof result.candidatePath!=="string"||!result.candidatePath.startsWith(config.privateDirectory+"/candidate-"))fail("E_NATIVE_RECEIPT");
     stage="candidate_read";
@@ -153,7 +164,11 @@
    if(!object(a)||Object.keys(a).sort().join(",")!=="authorizationRef,historySha256,version"||a.version!==1||typeof a.authorizationRef!=="string"||!/^[A-Za-z0-9:._-]{1,160}$/.test(a.authorizationRef)||typeof a.historySha256!=="string"||!/^[a-f0-9]{64}$/.test(a.historySha256)||config.positionEventsEnabled!==true)fail("E_OPENING_CONFIG");
    if(config.openingMarketRanges!==undefined){try{market.validateRanges(config.openingMarketRanges);}catch{fail("E_OPENING_CONFIG");}}
   }else if(config.openingMarketRanges!==undefined)fail("E_OPENING_CONFIG");
-  const deps={finances:{getLinkedAccounts:args=>tools.mcp__codex_apps__finances_get_linked_accounts(args),query:args=>tools.mcp__codex_apps__finances_query(args)},source,publisher,publication,hash:text=>transport.hash(text),now:()=>Date.now(),local:{prepare,prepareMarket},...(config.positionEventsEnabled===true?{positionAccountHashes:config.positionAccountHashes,release,market}:{}),...(config.openingPositionAuthorization?{openingPositionAuthorization:config.openingPositionAuthorization,openingMarketRanges:config.openingMarketRanges}: {})};
+  if(config.currentSnapshotLedgerSeparation!==undefined){
+   const a=config.currentSnapshotLedgerSeparation;
+   if(!object(a)||Object.keys(a).sort().join(",")!=="authorizationRef,version"||a.version!==1||typeof a.authorizationRef!=="string"||!/^[A-Za-z0-9:._-]{1,160}$/.test(a.authorizationRef)||!config.openingPositionAuthorization||config.positionEventsEnabled!==true)fail("E_SEPARATION_CONFIG");
+  }
+  const deps={finances:{getLinkedAccounts:args=>tools.mcp__codex_apps__finances_get_linked_accounts(args),query:args=>tools.mcp__codex_apps__finances_query(args)},source,publisher,publication,hash:text=>transport.hash(text),now:()=>Date.now(),local:{prepare,prepareMarket},...(config.positionEventsEnabled===true?{positionAccountHashes:config.positionAccountHashes,release,market}:{}),...(config.openingPositionAuthorization?{openingPositionAuthorization:config.openingPositionAuthorization,openingMarketRanges:config.openingMarketRanges}: {}),...(config.currentSnapshotLedgerSeparation?{currentSnapshotLedgerSeparation:config.currentSnapshotLedgerSeparation}:{})};
   async function runScheduled(request){
    request=JSON.parse(JSON.stringify(request));
    if(Object.keys(request).sort().join(",")!=="accountHashes,publish"||request.publish!==true||!Array.isArray(request.accountHashes)||!request.accountHashes.length||request.accountHashes.some(h=>typeof h!=="string"||!/^[a-f0-9]{64}$/.test(h)))fail("E_SCHEDULE_REQUEST");

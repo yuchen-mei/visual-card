@@ -140,18 +140,53 @@ function checkedAudit(data) {
   check(expected.size === 0, "OPENING_POSITION_CHANGED");
   return {anchor, trading};
 }
-function validateOpeningQuantities(next, snapshot) {
+function separationAuthorization(value) {
+  check(exact(value, ["version", "authorizationRef"]) && value.version === 1, "OPENING_SEPARATION_AUTHORIZATION_INVALID");
+  reference(value.authorizationRef);
+  return value;
+}
+function resolveQuantitySeparation(previous, policy = {}) {
+  check(object(previous) && object(policy), "OPENING_INVALID_INPUT");
+  const saved = previous.quantityReconciliation, requested = policy.currentSnapshotLedgerSeparation;
+  if (saved !== undefined) {
+    check(exact(saved, ["version", "authorization", "method", "sourceAsOf", "sourceDateStatus", "matched", "differences"])
+      && saved.version === 1 && saved.method === "source-holdings-independent-of-ledger"
+      && saved.sourceAsOf === null && saved.sourceDateStatus === "unknown" && Array.isArray(saved.differences)
+      && saved.matched === (saved.differences.length === 0), "OPENING_RECONCILIATION_INVALID");
+    separationAuthorization(saved.authorization);
+    let last = "";
+    for (const row of saved.differences) {
+      check(exact(row, ["ticker", "ledgerShares", "holdingShares"]), "OPENING_RECONCILIATION_INVALID");
+      ticker(row.ticker);
+      check(row.ticker > last && Number.isFinite(row.ledgerShares) && row.ledgerShares >= -EPSILON
+        && Number.isFinite(row.holdingShares) && row.holdingShares >= 0
+        && Math.abs(row.ledgerShares - row.holdingShares) > EPSILON, "OPENING_RECONCILIATION_INVALID");
+      last = row.ticker;
+    }
+  }
+  if (requested !== undefined) {
+    separationAuthorization(requested);
+    if (saved !== undefined) same(requested, saved.authorization, "OPENING_SEPARATION_AUTHORIZATION_CHANGED");
+  }
+  const result = requested === undefined ? saved?.authorization : requested;
+  return result === undefined ? undefined : clone(result);
+}
+function openingQuantityProof(next, snapshot, authorization) {
   check(object(next), "OPENING_INVALID_INPUT");
-  if (next.openingPositionAudit === undefined) return next;
+  if (authorization !== undefined) separationAuthorization(authorization);
+  if (next.openingPositionAudit === undefined) {
+    check(authorization === undefined && next.quantityReconciliation === undefined, "OPENING_RECONCILIATION_REQUIRES_OPENING");
+    return undefined;
+  }
   check(object(snapshot) && Array.isArray(snapshot.positions), "OPENING_CURRENT_POSITIONS_REQUIRED");
-  const {anchor, trading} = checkedAudit(next), current = new Map();
+  const {anchor, trading} = checkedAudit(next), current = new Map(), differences = [];
   for (const row of snapshot.positions) {
     check(object(row), "OPENING_INVALID_POSITION");
     ticker(row.ticker);
     check(Number.isFinite(row.shares) && row.shares >= 0, "OPENING_INVALID_POSITION");
     current.set(row.ticker, add(current.get(row.ticker) || 0, row.shares));
   }
-  for (const symbol of new Set([...anchor.positions.map(position => position.ticker), ...Object.keys(trading), ...current.keys()])) {
+  for (const symbol of [...new Set([...anchor.positions.map(position => position.ticker), ...Object.keys(trading), ...current.keys()])].sort()) {
     const item = trading[symbol] || {}, daily = new Map();
     let shares = item.openingPosition?.shares || 0;
     for (const order of item.orders || []) daily.set(order.date, add(daily.get(order.date) || 0, order.side === "buy" ? order.shares : -order.shares));
@@ -159,15 +194,27 @@ function validateOpeningQuantities(next, snapshot) {
       shares = add(shares, daily.get(date));
       check(shares >= -EPSILON, "OPENING_NEGATIVE_DAILY_POSITION");
     }
-    check(Math.abs(add(shares, -(current.get(symbol) || 0))) <= EPSILON, "OPENING_CURRENT_QUANTITY_MISMATCH");
+    const holdingShares = current.get(symbol) || 0;
+    if (Math.abs(add(shares, -holdingShares)) > EPSILON) differences.push({ticker: symbol, ledgerShares: shares, holdingShares});
   }
+  check(authorization !== undefined || differences.length === 0, "OPENING_CURRENT_QUANTITY_MISMATCH");
+  return authorization === undefined ? undefined : {version: 1, authorization: clone(authorization),
+    method: "source-holdings-independent-of-ledger", sourceAsOf: null, sourceDateStatus: "unknown",
+    matched: differences.length === 0, differences};
+}
+function validateOpeningQuantities(next, snapshot, {currentSnapshotLedgerSeparation} = {}) {
+  const reconciliation = openingQuantityProof(next, snapshot, currentSnapshotLedgerSeparation);
+  same(next.quantityReconciliation, reconciliation, "OPENING_RECONCILIATION_CHANGED");
   return next;
 }
 function applyOpeningPositions(next, previous, snapshot, policy = {}) {
   check(object(next) && object(previous) && object(snapshot) && object(policy), "OPENING_INVALID_INPUT");
   const approval = policy.openingPositionAuthorization, prior = previous.openingPositionAudit;
+  const separation = resolveQuantitySeparation(previous, policy);
+  same(next.quantityReconciliation, previous.quantityReconciliation, "OPENING_RECONCILIATION_CHANGED");
   if (approval === undefined && prior === undefined) {
     check(next.openingPositionAudit === undefined, "OPENING_UNAUTHORIZED_STATE");
+    check(separation === undefined && next.quantityReconciliation === undefined, "OPENING_RECONCILIATION_REQUIRES_OPENING");
     return next;
   }
   const anchor = anchorOf(previous);
@@ -182,7 +229,10 @@ function applyOpeningPositions(next, previous, snapshot, policy = {}) {
       authorized(approval, anchor.historySha256);
       check(approval.authorizationRef === prior.authorizationRef, "OPENING_AUTHORIZATION_CHANGED");
     }
-    return validateOpeningQuantities(next, snapshot);
+    const reconciliation = openingQuantityProof(next, snapshot, separation);
+    if (reconciliation !== undefined) next.quantityReconciliation = reconciliation;
+    else check(next.quantityReconciliation === undefined, "OPENING_RECONCILIATION_CHANGED");
+    return next;
   }
   authorized(approval, anchor.historySha256);
   check(next.openingPositionAudit === undefined, "OPENING_UNAUTHORIZED_STATE");
@@ -193,9 +243,11 @@ function applyOpeningPositions(next, previous, snapshot, policy = {}) {
     trading[position.ticker].openingPosition = {version: 1, asOf: position.openingDate, shares: position.shares};
   }
   const candidate = {...next, trading, openingPositionAudit: auditFor(anchor, approval.authorizationRef)};
-  validateOpeningQuantities(candidate, snapshot);
+  const reconciliation = openingQuantityProof(candidate, snapshot, separation);
+  check(next.quantityReconciliation === undefined, "OPENING_RECONCILIATION_CHANGED");
   next.trading = candidate.trading; next.openingPositionAudit = candidate.openingPositionAudit;
+  if (reconciliation !== undefined) next.quantityReconciliation = reconciliation;
   return next;
 }
 
-module.exports = {applyOpeningPositions, validateOpeningQuantities, OpeningError};
+module.exports = {applyOpeningPositions, validateOpeningQuantities, resolveQuantitySeparation, OpeningError};

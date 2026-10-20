@@ -70,6 +70,29 @@ test("scheduled success forwards confirmed position events to the notification c
 test("position feature requires one approved brokerage hash and both strict adapters",()=>{
  for(const overrides of [{positionEventsEnabled:"true"},{positionEventsEnabled:true},{positionEventsEnabled:true,positionAccountHashes:["a".repeat(64),"b".repeat(64)]}])assert.throws(()=>R.createRuntime({tools:{},config:{...config,...overrides},transport:T,source:{},publisher:{},orchestrator:{}}),{code:"E_POSITION_CONFIG"});
 });
+test("plan-only transport is sealed and cannot return an encrypted candidate",async()=>{
+ for(const mode of ["planned","validated","exit-error","still-running"]){
+  const bridge=D.createSession({expectedHead:head,baselineSha256:hash});let received,polls=0;
+  const tools={exec_command:async a=>a.cmd.includes("--write-baseline")?{exit_code:0,output:JSON.stringify({path:config.privateDirectory+"/baseline-"+hash+".enc.json"})}:{session_id:41,output:JSON.stringify(bridge.header)},write_stdin:async a=>{
+   if(a.chars==="\u0003")return{exit_code:1,output:""};
+   if(!a.chars){polls++;return mode==="still-running"?{session_id:41,output:""}:{exit_code:mode==="exit-error"?1:0,output:""};}
+   received=bridge.open(JSON.parse(a.chars));
+   return {session_id:41,output:JSON.stringify({status:mode==="validated"?"validated":"planned",operationId:received.operationId,expectedHead:head,baselineSha256:hash,candidateCreated:false,publishable:false,positionEvents:[]})};
+  }};
+  const rt=R.createRuntime({tools,config:{...config,passwordFile:"/private/credentials/password"},transport:T,source:{},publisher:{},orchestrator:{}});
+  const run=()=>rt.prepare({operationId:"synthetic-plan",baseline:{head,sha256:hash,content},snapshot:{privateField:"sealed-only"},policy:{},planOnly:true});
+  if(mode==="planned"){assert.equal((await run()).status,"planned");assert.equal(polls,1);}else await assert.rejects(run,{code:mode==="validated"?"E_PLAN_RECEIPT":"E_PLAN_PROCESS"});
+  assert.equal(received.planOnly,true);
+ }
+});
+test("snapshot-ledger separation requires explicit strict runtime authorization",async()=>{
+ const M=require("./finances_market.cjs"),release={publishRelease:()=>{}},base={...config,passwordFile:"/private/credentials/password",positionEventsEnabled:true,positionAccountHashes:["b".repeat(64)],openingPositionAuthorization:{version:1,authorizationRef:"synthetic-opening",historySha256:"d".repeat(64)}};
+ const make=c=>R.createRuntime({tools:{},config:c,transport:T,source:{},publisher:{},market:M,release,orchestrator:{runIteration:async(_q,deps)=>deps.currentSnapshotLedgerSeparation}});
+ const approved={version:1,authorizationRef:"synthetic-separation"};
+ assert.deepEqual(await make({...base,currentSnapshotLedgerSeparation:approved}).run({}),approved);
+ for(const bad of [true,{}, {...approved,version:2},{...approved,extra:true},{...approved,authorizationRef:""}])assert.throws(()=>make({...base,currentSnapshotLedgerSeparation:bad}),{code:"E_SEPARATION_CONFIG"});
+ assert.throws(()=>make({...base,openingPositionAuthorization:undefined,currentSnapshotLedgerSeparation:approved}),{code:"E_SEPARATION_CONFIG"});
+});
 test("public market adapter sends small ranges/date input bound to the local public baseline hash",async()=>{
  const M=require('./finances_market.cjs'),market={asOf:'2026-10-16',source:'yahoo-chart',generatedAt:'2026-10-17T00:00:00Z',prices:{AAA:[{date:'2026-10-16',close:10}]}},existingContent=JSON.stringify(market),calls=[];
  const request={ranges:{AAA:'2026-10-16'},existingContent,end:'2026-10-18'};

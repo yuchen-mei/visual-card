@@ -184,9 +184,20 @@ function openingFixture(withPositions=false){
  f.fetched=copy(market);f.fetched.generatedAt="2026-10-19T00:00:00Z";
  f.fetched.prices.DEMO=[{date:"2024-12-30",close:7},{date:"2024-12-31",close:8},{date:"2025-01-02",close:999},{date:"2026-05-01",close:25},{date:"2026-10-16",close:999}];
  f.deps.market={...M,readMarketBaseline:async head=>{f.calls.marketReads.push(head);return f.marketBase;}};
- f.deps.local.prepareMarket=async input=>{f.calls.market.push(copy(input));return{status:"validated",rangesContent:JSON.stringify(input.ranges),marketContent:JSON.stringify(f.fetched)};};
+ f.deps.local.prepareMarket=async input=>{
+  f.calls.market.push(copy(input));let market=f.fetched;
+  if(input.end!==f.marketBase.market.asOf){
+   market=JSON.parse(input.existingContent);market.asOf=input.end;market.generatedAt="2026-10-18T04:00:00Z";
+   for(const [ticker,start]of Object.entries(input.ranges))market.prices[ticker]=[{date:start,close:12},{date:input.end,close:13}];
+  }
+  return{status:"validated",rangesContent:JSON.stringify(input.ranges),marketContent:JSON.stringify(market)};
+ };
  const prepare=f.deps.local.prepare;
- f.deps.local.prepare=async input=>({...await prepare(input),validatedMarketSha256:hash(input.marketContent)});
+ f.deps.local.prepare=async input=>{
+  const result={...await prepare(input),validatedMarketSha256:hash(input.marketContent)};
+  if(input.planOnly){delete result.content;delete result.validatedSha256;return{...result,status:"planned",publishable:false,candidateCreated:false};}
+  return result;
+ };
  f.deps.release={publishRelease:async request=>{f.calls.releases.push(copy(request));return{status:request.publish?"published":"dry_run"};}};
  return f;
 }
@@ -304,10 +315,30 @@ test("opening market fetch failure has no encryption or partial publication",asy
  const r=await f.run();assert.equal(r.status,"failed");assert.equal(r.phase,"market_preparation");assert.equal(r.productionPreserved,true);
  assert.doesNotMatch(JSON.stringify(r),/synthetic-private-network-detail/);assert.equal(f.calls.prepared.length+f.calls.published.length+f.calls.releases.length,0);
 });
-test("position plans cannot replace prices after opening ciphertext has been validated",async()=>{
- const f=openingFixture(true);f.prepared.positionEvents=[{id:"d".repeat(64),kind:"opened",ticker:"NEW",date:"2026-10-16",firstKnownBuyDate:"2026-10-16"}];
- const r=await f.run();assert.equal(r.code,"E_OPENING_EVENT_MARKET_REVALIDATION_REQUIRED");assert.equal(r.phase,"market_preparation");
- assert.equal(f.calls.market.length,1);assert.equal(f.calls.prepared.length,1);assert.equal(f.calls.published.length+f.calls.releases.length,0);
+test("opening plans complete new-position quotes before the only publishable preparation",async()=>{
+ const f=openingFixture(true);f.prepared.positionEvents=[{id:"d".repeat(64),kind:"opened",ticker:"NEW",date:"2026-10-17",firstKnownBuyDate:"2026-10-17"}];
+ const pinned=f.marketBase.files.find(file=>file.path==="market.prices.json"),fetch=f.deps.local.prepareMarket;
+ f.deps.local.prepareMarket=async input=>{assert.equal(input.existingContent,pinned.content);assert.equal(hash(input.existingContent),pinned.sha256);return fetch(input);};
+ const r=await f.run();assert.equal(r.status,"published");assert.equal(r.eventsReady,true);
+ assert.equal(f.calls.market.length,2);assert.equal(f.calls.prepared.length,2);assert.equal(f.calls.published.length,0);assert.equal(f.calls.releases.length,1);
+ const [plan,final]=f.calls.prepared;assert.equal(plan.planOnly,true);assert.equal(final.planOnly,undefined);
+ for(const key of ["operationId","baseline","snapshot","policy"])assert.deepEqual(final[key],plan[key]);
+ assert.deepEqual(f.calls.market[1].ranges,{NEW:"2026-10-17"});assert.equal(f.calls.market[1].end,"2026-10-18");
+ assert.notEqual(plan.marketContent,pinned.content);assert.equal(f.calls.market[1].existingContent,pinned.content);
+ const market=JSON.parse(final.marketContent);assert.equal(market.asOf,"2026-10-18");assert.deepEqual(market.prices.NEW,[{date:"2026-10-17",close:12},{date:"2026-10-18",close:13}]);
+ assert.equal(final.marketBinding.baselineSha256,plan.marketBinding.baselineSha256);assert.notEqual(final.marketBinding.candidateSha256,plan.marketBinding.candidateSha256);
+ for(const ticker of Object.keys(f.marketBase.market.prices))assert.deepEqual(market.prices[ticker],JSON.parse(plan.marketContent).prices[ticker]);
+ const files=f.calls.releases[0].files;assert.equal(files.find(file=>file.path==="market.prices.json").content,final.marketContent);
+ assert.equal(JSON.parse(files.find(file=>file.path==="scripts/market_price_ranges.json").content).NEW,"2026-10-17");
+});
+test("a second bound fetch retains earlier opening additions even for the same requested ticker",async()=>{
+ const f=openingFixture(true);f.prepared.positionEvents=[{id:"d".repeat(64),kind:"reopened",ticker:"DEMO",date:"2026-10-17",firstKnownBuyDate:"2025-01-02"}];
+ const r=await f.run();assert.equal(r.status,"published");assert.equal(f.calls.market.length,2);
+ assert.equal(f.calls.market[1].existingContent,f.marketBase.files.find(file=>file.path==="market.prices.json").content);
+ assert.deepEqual(f.calls.market[1].ranges,{DEMO:"2024-12-31"});
+ const final=JSON.parse(f.calls.prepared[1].marketContent);
+ assert.deepEqual(final.prices.DEMO,[{date:"2024-12-31",close:8},...f.marketBase.market.prices.DEMO,{date:"2026-10-18",close:13}]);
+ assert.equal(f.calls.releases[0].files.find(file=>file.path==="market.prices.json").content,f.calls.prepared[1].marketContent);
 });
 test("an event already covered by the final opening plan can publish the same validated prices",async()=>{
  const f=openingFixture(true);f.prepared.positionEvents=[{id:"d".repeat(64),kind:"reopened",ticker:"DEMO",date:"2026-10-16",firstKnownBuyDate:"2025-01-02"}];
@@ -384,5 +415,78 @@ test("opening benchmark quote requests cannot add a missing monitoring configura
   const f=openingFixture();f.deps.openingMarketRanges={[ticker]:"2024-12-31"};delete f.marketBase.ranges[ticker];f.repackMarket();
   const r=await f.run();assert.equal(r.code,"E_OPENING_PROTECTED_BENCHMARK");assert.equal(r.phase,"market_preparation");
   assert.equal(f.calls.market.length+f.calls.prepared.length+f.calls.published.length+f.calls.releases.length,0);
+ }
+});
+test("opening close removes only monitoring and never reinstates its opening range",async()=>{
+ const f=openingFixture(true);f.prepared.positionEvents=[{id:"d".repeat(64),kind:"closed",ticker:"DEMO",date:"2026-10-17",firstKnownBuyDate:"2025-01-02"}];
+ const r=await f.run();assert.equal(r.status,"published");assert.equal(f.calls.market.length,1);assert.equal(f.calls.prepared.length,2);
+ const files=f.calls.releases[0].files,ranges=JSON.parse(files.find(file=>file.path==="scripts/market_price_ranges.json").content),market=JSON.parse(files.find(file=>file.path==="market.prices.json").content);
+ assert.equal(Object.hasOwn(ranges,"DEMO"),false);assert.deepEqual(market.prices.DEMO,[{date:"2024-12-31",close:8},...f.marketBase.market.prices.DEMO]);
+ for(const ticker of ["SPY","QQQ"]){assert.equal(ranges[ticker],f.marketBase.ranges[ticker]);assert.deepEqual(market.prices[ticker],f.marketBase.market.prices[ticker]);}
+ assert.equal(market.asOf,f.marketBase.market.asOf);
+});
+test("opening reopen preserves stored prices and only appends scoped real quote dates",async()=>{
+ const f=openingFixture(true);delete f.deps.openingMarketRanges;delete f.marketBase.ranges.DEMO;f.repackMarket();
+ f.prepared.positionEvents=[{id:"d".repeat(64),kind:"reopened",ticker:"DEMO",date:"2026-10-17",firstKnownBuyDate:"2025-01-02"}];
+ const r=await f.run();assert.equal(r.status,"published");assert.deepEqual(f.calls.market[0].ranges,{DEMO:"2025-01-02"});
+ const final=JSON.parse(f.calls.prepared[1].marketContent);assert.deepEqual(final.prices.DEMO,[...f.marketBase.market.prices.DEMO,{date:"2026-10-18",close:13}]);
+ for(const ticker of ["OTHER","SPY","QQQ"])assert.deepEqual(final.prices[ticker],f.marketBase.market.prices[ticker]);
+ assert.equal(JSON.parse(f.calls.releases[0].files.find(file=>file.path==="scripts/market_price_ranges.json").content).DEMO,"2025-01-02");
+});
+test("opening benchmark lifecycle keeps its original monitoring range and preserves quote history",async()=>{
+ for(const kind of ["opened","reopened","closed"]){
+  const f=openingFixture(true);delete f.deps.openingMarketRanges;
+  f.prepared.positionEvents=[{id:"d".repeat(64),kind,ticker:"SPY",date:"2026-10-17",firstKnownBuyDate:"2024-12-31"}];
+  const r=await f.run();assert.equal(r.status,"published");
+  if(kind==="closed"){assert.equal(f.calls.market.length,0);assert.equal(f.calls.releases.length,0);assert.equal(f.calls.published.length,1);}
+  else{
+   assert.equal(f.calls.market.length,1);assert.deepEqual(f.calls.market[0].ranges,{SPY:"2024-12-31"});const files=f.calls.releases[0].files;
+   assert.equal(files.find(file=>file.path==="scripts/market_price_ranges.json").content,f.marketBase.files.find(file=>file.path==="scripts/market_price_ranges.json").content);
+   assert.deepEqual(JSON.parse(f.calls.prepared[1].marketContent).prices.SPY,[{date:"2024-12-31",close:12},...f.marketBase.market.prices.SPY,{date:"2026-10-18",close:13}]);
+  }
+ }
+ const missing=openingFixture(true);delete missing.deps.openingMarketRanges;delete missing.marketBase.ranges.SPY;missing.repackMarket();
+ missing.prepared.positionEvents=[{id:"d".repeat(64),kind:"opened",ticker:"SPY",date:"2026-10-17",firstKnownBuyDate:"2026-10-17"}];
+ const r=await missing.run();assert.equal(r.code,"E_OPENING_PROTECTED_BENCHMARK");assert.equal(missing.calls.prepared.length,1);assert.equal(missing.calls.published.length+missing.calls.releases.length,0);
+});
+test("planning receipts cannot contain a candidate and final events must match the proven plan",async()=>{
+ for(const change of [
+  result=>{result.publishable=true;},result=>{result.candidateCreated=true;},result=>{result.content="synthetic-ciphertext";},result=>{result.candidatePath="synthetic-path";},result=>{result.validatedSha256="f".repeat(64);}
+ ]){
+  const f=openingFixture(true),prepare=f.deps.local.prepare;f.deps.local.prepare=async input=>{const result=await prepare(input);if(input.planOnly)change(result);return result;};
+  const r=await f.run();assert.equal(r.code,"E_POSITION_PLAN_RECEIPT");assert.equal(f.calls.prepared.length,1);assert.equal(f.calls.published.length+f.calls.releases.length,0);
+ }
+ const f=openingFixture(true),prepare=f.deps.local.prepare;
+ f.deps.local.prepare=async input=>{const result=await prepare(input);if(!input.planOnly)result.positionEvents=[{id:"d".repeat(64),kind:"closed",ticker:"DEMO",date:"2026-10-17",firstKnownBuyDate:"2025-01-02"}];return result;};
+ const r=await f.run();assert.equal(r.code,"E_POSITION_PLAN_CHANGED");assert.equal(f.calls.prepared.length,2);assert.equal(f.calls.published.length+f.calls.releases.length,0);
+});
+test("event market tamper or final market receipt failure cannot publish the planned candidate",async()=>{
+ for(const failure of ["unrequested","extra","asOf","range","finalhash","finalvalidation"]){
+  const f=openingFixture(true);delete f.deps.openingMarketRanges;
+  f.prepared.positionEvents=[{id:"d".repeat(64),kind:"opened",ticker:"NEW",date:"2026-10-17",firstKnownBuyDate:"2026-10-17"}];
+  const fetch=f.deps.local.prepareMarket,prepare=f.deps.local.prepare;
+  f.deps.local.prepareMarket=async input=>{const result=await fetch(input),market=JSON.parse(result.marketContent);
+   if(failure==="unrequested")market.prices.QQQ[0].close+=1;
+   if(failure==="extra")market.prices.EXTRA=[{date:"2026-10-17",close:1}];
+   if(failure==="asOf")market.asOf="2026-10-19";
+   if(failure==="range")result.rangesContent=JSON.stringify({...input.ranges,EXTRA:"2026-10-17"});
+   result.marketContent=JSON.stringify(market);return result;
+  };
+  f.deps.local.prepare=async input=>{const result=await prepare(input);if(!input.planOnly){if(failure==="finalhash")result.validatedMarketSha256="f".repeat(64);if(failure==="finalvalidation")throw Object.assign(Error("synthetic-private-detail"),{code:"OPENING_PRICE_COVERAGE_REQUIRED"});}return result;};
+  const r=await f.run();assert.equal(r.status,"failed");assert.equal(f.calls.published.length+f.calls.releases.length,0);assert.equal(r.positionEvents,undefined);
+  assert.equal(f.calls.prepared.length,["finalhash","finalvalidation"].includes(failure)?2:1);assert.doesNotMatch(JSON.stringify(r),/synthetic-private-detail/);
+ }
+});
+test("explicit current snapshot separation is copied into both plans without source-wait mode",async()=>{
+ const f=openingFixture(true),authorization={version:1,authorizationRef:"synthetic-current-snapshot-authorization"};
+ f.deps.currentSnapshotLedgerSeparation=copy(authorization);
+ f.deps.publisher.readBaseline=async()=>{f.deps.currentSnapshotLedgerSeparation.authorizationRef="synthetic-mutated";return f.baseline;};
+ const r=await f.run();assert.equal(r.status,"published");assert.equal(f.calls.prepared.length,2);
+ for(const input of f.calls.prepared){assert.deepEqual(input.policy.currentSnapshotLedgerSeparation,authorization);assert.equal(input.recordSourceWait,undefined);}
+});
+test("malformed current snapshot separation authorization fails before connector reads",async()=>{
+ for(const authorization of [{version:2,authorizationRef:"synthetic"},{version:1,authorizationRef:" "},{version:1,authorizationRef:"synthetic",extra:true}]){
+  const f=openingFixture();f.deps.currentSnapshotLedgerSeparation=authorization;const r=await f.run();
+  assert.equal(r.code,"E_CURRENT_SNAPSHOT_AUTHORIZATION_INVALID");assert.equal(r.phase,"preflight");assert.equal(f.calls.queries.length+f.calls.prepared.length,0);
  }
 });

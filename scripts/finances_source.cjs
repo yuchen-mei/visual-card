@@ -33,6 +33,49 @@ function sourceCents(value) {
   sourceRequire(Number.isSafeInteger(cents), "SOURCE_MONEY_OVERFLOW");
   return cents;
 }
+// Asset valuations may contain fractions of a cent. Work with their reported
+// decimal representation; cost basis and transaction conversion stay unchanged.
+function sourceAssetDecimal(value) {
+  sourceRequire(typeof value === "number" && Number.isFinite(value) && value >= 0, "SOURCE_INVALID_MONEY");
+  const [coefficient, exponent = "0"] = String(value).split("e");
+  const [whole, fraction = ""] = coefficient.split(".");
+  const scale = fraction.length - Number(exponent) - 2;
+  const units = BigInt(whole + fraction);
+  return { units: scale < 0 ? units * 10n ** BigInt(-scale) : units,
+    denominator: 10n ** BigInt(Math.max(0, scale)) };
+}
+function sourceRoundAssetCents({units, denominator}) {
+  const value = (units * 2n + denominator) / (denominator * 2n);
+  sourceRequire(value <= BigInt(Number.MAX_SAFE_INTEGER), "SOURCE_MONEY_OVERFLOW");
+  return Number(value);
+}
+function sourceAllocateAssetCents(items, expectedTotal) {
+  const rows = items.map(item => ({...item, decimal: sourceAssetDecimal(item.rawValue)}));
+  const denominator = rows.reduce((largest, row) => row.decimal.denominator > largest ? row.decimal.denominator : largest, 1n);
+  let total = 0n, floors = 0n;
+  for (const row of rows) {
+    const units = row.decimal.units * (denominator / row.decimal.denominator);
+    row.cents = units / denominator; row.remainder = units % denominator;
+    total += units; floors += row.cents;
+  }
+  const roundedTotal = sourceRoundAssetCents({units: total, denominator});
+  sourceRequire(roundedTotal === expectedTotal, "SOURCE_BROKER_BALANCE_MISMATCH");
+  // Allocate only the fractions already present in the source sum. The account
+  // balance is checked above and never supplies a balancing adjustment.
+  const remaining = Number(BigInt(roundedTotal) - floors);
+  rows.sort((a, b) => a.remainder === b.remainder
+    ? (a.securityId < b.securityId ? -1 : a.securityId > b.securityId ? 1 : 0)
+    : a.remainder > b.remainder ? -1 : 1);
+  for (let index = 0; index < rows.length; index++) {
+    if (index < remaining) {
+      sourceRequire(rows[index].remainder > 0n, "SOURCE_ASSET_ROUNDING_INVALID");
+      rows[index].cents++;
+    }
+    rows[index].cents = Number(rows[index].cents);
+  }
+  sourceRequire(sourceSum(rows.map(row => row.cents)) === roundedTotal, "SOURCE_ASSET_ROUNDING_INVALID");
+  return rows;
+}
 function sourceSum(values) {
   return values.reduce((total, value) => {
     const next = total + value;
@@ -103,7 +146,7 @@ function normalizeAssetSnapshot({ linkedAccounts, holdingsResponses, fetchedAt, 
       sourceComplete(institution.account_coverage, "accounts");
       const type = sourceAccountType(account);
       sourceCurrency(account.balances);
-      const totalCents = sourceCents(account.balances.current);
+      const totalCents = sourceRoundAssetCents(sourceAssetDecimal(account.balances.current));
       selected.set(account.account_id, {
         id: account.account_id, type, currency: "USD", totalCents,
         cashCents: type === "brokerage" ? 0 : totalCents, securitiesCents: 0,
@@ -163,7 +206,7 @@ function normalizeAssetSnapshot({ linkedAccounts, holdingsResponses, fetchedAt, 
     const visited = new Set(), securityIds = new Set(), tickers = new Set();
     const signature = entries.get(null).signature;
     let cursor = null, cashRows = 0;
-    const cash = [], securities = [];
+    const values = [];
     while (true) {
       sourceRequire(!visited.has(cursor), "SOURCE_CURSOR_CYCLE");
       visited.add(cursor);
@@ -174,14 +217,17 @@ function normalizeAssetSnapshot({ linkedAccounts, holdingsResponses, fetchedAt, 
         const securityId = sourceSecurityId(row.security_id);
         sourceRequire(!securityIds.has(row.security_id), "SOURCE_DUPLICATE_SECURITY"); securityIds.add(row.security_id);
         sourceCurrency(row);
-        const value = sourceCents(row.institution_value);
+        const value = sourceRoundAssetCents(sourceAssetDecimal(row.institution_value));
         const type = typeof row.type === "string" ? row.type.toLowerCase() : "";
         sourceRequire(typeof row.is_cash_equivalent === "boolean", "SOURCE_CASH_CLASSIFICATION_MISSING");
         sourceRequire(!(type === "cash" && !row.is_cash_equivalent) && !(["equity", "stock", "etf"].includes(type) && row.is_cash_equivalent), "SOURCE_CASH_CLASSIFICATION_CONFLICT");
         if (row.is_cash_equivalent || type === "cash") {
+          // Security valuation rounding must never move cash or buying power.
+          const cashDecimal = sourceAssetDecimal(row.institution_value);
+          sourceRequire(cashDecimal.units % cashDecimal.denominator === 0n, "SOURCE_CASH_SUBCENT_REQUIRES_REVIEW");
           if (row.quantity !== undefined && row.quantity !== null) sourceRequire(typeof row.quantity === "number" && Number.isFinite(row.quantity) && row.quantity >= 0, "SOURCE_INVALID_QUANTITY");
           if (row.institution_price !== undefined && row.institution_price !== null) sourceRequire(typeof row.institution_price === "number" && Number.isFinite(row.institution_price) && row.institution_price >= 0, "SOURCE_INVALID_PRICE");
-          cash.push(value); cashRows++; continue;
+          values.push({securityId, rawValue: row.institution_value}); cashRows++; continue;
         }
         sourceRequire(["equity", "stock", "etf"].includes(type), "SOURCE_UNSUPPORTED_SECURITY_TYPE");
         sourceRequire(typeof row.ticker_symbol === "string" && /^[A-Z][A-Z0-9.-]{0,14}$/.test(row.ticker_symbol) && !["CASH", "CD"].includes(row.ticker_symbol), "SOURCE_INVALID_TICKER");
@@ -202,13 +248,21 @@ function normalizeAssetSnapshot({ linkedAccounts, holdingsResponses, fetchedAt, 
           sourceRequire(Date.parse(`${priceDate}T00:00:00Z`) <= Date.parse(retrieved), "SOURCE_FUTURE_PRICE_DATE");
           position.priceAsOf = priceDate;
         }
-        securities.push(value); positions.push(position);
+        values.push({securityId, rawValue: row.institution_value, position, markCents: sourceCents(row.quantity * row.institution_price)});
+        positions.push(position);
       }
       if (!entry.page.has_more) break;
       cursor = entry.page.next_cursor;
     }
     sourceRequire(visited.size === entries.size, "SOURCE_ORPHAN_HOLDINGS_PAGE");
     sourceRequire(cashRows > 0, "SOURCE_EXPLICIT_CASH_HOLDING_REQUIRED");
+    const cash = [], securities = [];
+    for (const row of sourceAllocateAssetCents(values, account.totalCents)) {
+      if (row.position) {
+        sourceRequire(Math.abs(row.markCents - row.cents) <= 1, "SOURCE_POSITION_VALUE_MISMATCH");
+        row.position.valueCents = row.cents; securities.push(row.cents);
+      } else cash.push(row.cents);
+    }
     account.cashCents = sourceSum(cash); account.securitiesCents = sourceSum(securities);
     sourceRequire(sourceSum([account.cashCents, account.securitiesCents]) === account.totalCents, "SOURCE_BROKER_BALANCE_MISMATCH");
   }

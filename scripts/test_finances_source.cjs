@@ -164,6 +164,68 @@ test("minor floating representation noise rounds to cents and reconciles", () =>
   assert.equal(normalizeAssetSnapshot(input).reconciliation.totalValueCents, 16038);
 });
 
+function fractionalFixture(values, total, cash = 20.25) {
+  const input = fixture();
+  brokerOf(input).balances.current = total;
+  resultOf(input).items = [holding("synthetic-cash", null, "cash", cash, 1),
+    ...values.map((value, index) => holding(`synthetic-fraction-${index}`, `SYN${index}`, "equity", 1, value))];
+  return input;
+}
+test("fractional asset values reconcile by one exact sum and deterministic largest remainders", () => {
+  for (const values of [[40.004, 40.004], [40.006, 40.006]]) {
+    const input = fractionalFixture(values, 100.26), before = copy(input);
+    const result = normalizeAssetSnapshot(freeze(input)), broker = result.accounts.find(a => a.type === "brokerage");
+    assert.deepEqual(result.positions.map(p => p.valueCents), [4001, 4000]);
+    assert.equal(broker.cashCents, 2025); assert.equal(broker.securitiesCents, 8001); assert.equal(broker.totalCents, 10026);
+    assert.equal(result.positions.reduce((sum, p) => sum + p.valueCents, 0), broker.securitiesCents);
+    assert.equal(broker.cashCents + broker.securitiesCents, broker.totalCents);
+    assert.deepEqual(input, before);
+  }
+});
+test("multiple residual cents come only from actual fractions and cash stays fixed", () => {
+  const input = fractionalFixture(Array(8).fill(1.004), 28.28);
+  const result = normalizeAssetSnapshot(input), broker = result.accounts.find(a => a.type === "brokerage");
+  assert.deepEqual(result.positions.map(p => p.valueCents), [101, 101, 101, 100, 100, 100, 100, 100]);
+  assert.equal(broker.cashCents, 2025); assert.equal(broker.securitiesCents, 803);
+  const exact = normalizeAssetSnapshot(fractionalFixture([1, 2], 23.25));
+  assert.deepEqual(exact.positions.map(p => p.valueCents), [100, 200]);
+});
+test("half-cent and exponent representations use exact decimal asset rounding without changing cost conversion", () => {
+  for (const total of [1.005, 1.01]) {
+    const input = fractionalFixture([1.005], total, 0); resultOf(input).items[1].cost_basis = 1.005;
+    const result = normalizeAssetSnapshot(input), broker = result.accounts.find(a => a.type === "brokerage");
+    assert.equal(result.positions[0].valueCents, 101); assert.equal(broker.totalCents, 101);
+    assert.equal(result.positions[0].costBasisCents, Math.round(1.005 * 100));
+  }
+  const tiny = normalizeAssetSnapshot(fractionalFixture([1e-7, 0.0049999], 0.005, 0));
+  assert.deepEqual(tiny.positions.map(p => p.valueCents), [0, 1]);
+});
+test("fractional rounding is unchanged by row order, page partition or response ordering", () => {
+  const input = fractionalFixture([40.004, 40.004], 100.26), expected = normalizeAssetSnapshot(input);
+  resultOf(input).items.reverse(); assert.deepEqual(normalizeAssetSnapshot(input), expected);
+  const second = copy(input.holdingsResponses[0]); second.queries[0].cursor = "synthetic-fraction-page";
+  second.response.results[0].result.items = resultOf(input).items.splice(1);
+  resultOf(input).has_more = true; resultOf(input).next_cursor = "synthetic-fraction-page";
+  input.holdingsResponses.push(second); input.holdingsResponses.reverse();
+  assert.deepEqual(normalizeAssetSnapshot(input), expected);
+});
+test("a real rounded-total discrepancy is rejected rather than allocated to a position", () => {
+  // 100.25 equals the old sum of individually rounded rows but not the true sum.
+  for (const total of [100.25, 100.27])
+    assert.throws(() => normalizeAssetSnapshot(fractionalFixture([40.004, 40.004], total)),
+      {message: "SOURCE_BROKER_BALANCE_MISMATCH"});
+});
+test("subcent cash requires review so security valuation cannot alter buying power", () => {
+  for (const stock of [1.003, 1.006])
+    assert.throws(() => normalizeAssetSnapshot(fractionalFixture([stock], 2.01, 1.004)),
+      {message: "SOURCE_CASH_SUBCENT_REQUIRES_REVIEW"});
+});
+test("allocated values retain the original single-position price consistency bound", () => {
+  const input = fractionalFixture([1.0049, 1.0048], 2.01, 0);
+  resultOf(input).items[1].institution_price = 0.99;
+  assert.throws(() => normalizeAssetSnapshot(input), {message: "SOURCE_POSITION_VALUE_MISMATCH"});
+});
+
 test("complete explicit field projection is safe and optional price dates stay unknown", () => {
   const input = fixture();
   input.holdingsResponses[0].queries[0].select_fields = ["account_id", "security_id", "ticker_symbol", "is_cash_equivalent", "type", "subtype", "quantity", "institution_price", "institution_value", "cost_basis", "iso_currency_code"];
@@ -265,6 +327,8 @@ test("pure core runs in a functions-style runtime without require, module, crypt
   vm.runInContext(source, context);
   const actual = context.normalizeAssetSnapshot(fixture());
   assert.deepEqual(copy(actual), normalizeAssetSnapshot(fixture()));
+  const fractions = fractionalFixture([40.004, 40.004], 100.26);
+  assert.deepEqual(copy(context.normalizeAssetSnapshot(fractions)), normalizeAssetSnapshot(fractions));
 });
 
 test("schema 2 integrates with updater while preserving synthetic historical data", () => {
@@ -277,4 +341,19 @@ test("schema 2 integrates with updater while preserving synthetic historical dat
   assert.deepEqual(result.performance, previous.performance);
   assert.equal(result.assetSnapshot.sourceDateStatus, "unknown");
   assert.equal(result.holdings.reduce((sum, row) => sum + Math.round(row.value * 100), 0), 16038);
+});
+
+test("allocated source totals pass the unchanged updater and actual browser contract", () => {
+  const {buildAssetPayload, browserContract} = require("./update_finances.cjs");
+  const input = fractionalFixture([40.004, 40.004], 100.26), snapshot = normalizeAssetSnapshot(input);
+  const previous = {asOf: "2025-03-01", holdings: [{ticker: "CASH", type: "cash", value: 100}],
+    performance: {totalGain: 5, totalPrincipal: 95, totalCurrentValue: 100, totalReturnPct: 5 / 95 * 100,
+      items: [{label: "现金利息", kind: "cash_interest", gain: 5}]}};
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const next = buildAssetPayload(snapshot, previous, {now: Date.parse(input.fetchedAt), html, policy: input.policy});
+  const displayed = browserContract(html).normalizeData(copy(next));
+  assert.equal(Math.round(displayed.equityValue * 100), 8001);
+  assert.equal(Math.round(displayed.cashValue * 100), 8038);
+  assert.equal(Math.round(displayed.totalAssetValue * 100), 16039);
+  assert.deepEqual(next.performance, previous.performance);
 });

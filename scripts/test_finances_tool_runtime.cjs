@@ -3,6 +3,29 @@ const {test}=require("node:test"),assert=require("node:assert/strict"),fs=requir
 const R=require("./finances_tool_runtime.cjs"),T=require("./finances_transport.cjs"),D=require("./finances_daily.cjs"),U=require("./update_finances.cjs"),IO=require("./finances_local_io.cjs");
 const head="a".repeat(40),content=JSON.stringify(U.encrypt({synthetic:true},"synthetic-password"),null,2)+"\n",hash=T.hash(content);
 const config={repositoryDirectory:"/private/repo",privateDirectory:"/private/state",journalDirectory:"/private/journal",nativeHelper:"/private/helper",nodeBinary:"/node"};
+test("public market IO accepts only immutable schema-checked public data",()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),"vc-market-io-"));
+ const text=JSON.stringify({asOf:"2026-10-16",source:"yahoo-chart",generatedAt:"2026-10-17T00:00:00Z",prices:{DEMO:[{date:"2026-10-16",close:10}]}}),sha=T.hash(text);
+ try{
+  const file=IO.writePublicMarket(dir,sha,text);assert.equal(fs.readFileSync(file,"utf8"),text);assert.equal(IO.writePublicMarket(dir,sha,text),file);
+  for(const bad of ['{"private":"synthetic"}',text.replace('"close":10','"close":-1')])assert.throws(()=>IO.writePublicMarket(dir,T.hash(bad),bad));
+  assert.throws(()=>IO.writePublicMarket(dir,"0".repeat(64),text));
+  fs.chmodSync(file,0o644);assert.throws(()=>IO.writePublicMarket(dir,sha,text));
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test("public market is passed by private file with its hash inside sealed input",async()=>{
+ const marketContent=JSON.stringify({asOf:"2026-10-16",source:"yahoo-chart",generatedAt:"2026-10-17T00:00:00Z",prices:{DEMO:[{date:"2026-10-16",close:10}]}}),marketBinding={baselineSha256:"a".repeat(64),candidateSha256:T.hash(marketContent)};
+ const cfg={...config,passwordFile:"/private/credentials/password"},calls=[];let received;
+ const bridge=D.createSession({expectedHead:head,baselineSha256:hash});
+ const tools={exec_command:async a=>{calls.push(a);if(a.cmd.includes("--write-baseline"))return{exit_code:0,output:JSON.stringify({path:cfg.privateDirectory+"/baseline-"+hash+".enc.json"})};if(a.cmd.includes("--write-public-market"))return{exit_code:0,output:JSON.stringify({path:cfg.privateDirectory+"/market-"+marketBinding.candidateSha256+".json"})};if(a.cmd.includes("--serve-file"))return{session_id:31,output:JSON.stringify(bridge.header)};throw Error("unexpected");},write_stdin:async a=>{received=bridge.open(JSON.parse(a.chars));return{exit_code:0,output:JSON.stringify({status:"unchanged",operationId:received.operationId,expectedHead:head,baselineSha256:hash,validatedMarketSha256:marketBinding.candidateSha256})};}};
+ const runtime=R.createRuntime({tools,config:cfg,transport:T,source:{},publisher:{},orchestrator:{},market:require("./finances_market.cjs")});
+ const r=await runtime.prepare({operationId:"synthetic-market",baseline:{head,sha256:hash,content},snapshot:{privateField:"DO-NOT-PRINT"},policy:{},marketContent,marketBinding});
+ assert.equal(r.status,"unchanged");assert.deepEqual(received.marketBinding,marketBinding);assert.equal(received.marketContent,undefined);assert(calls.some(a=>a.cmd.includes("--market")));assert(!JSON.stringify(calls).includes("DO-NOT-PRINT"));
+ await assert.rejects(()=>runtime.prepare({operationId:"bad",baseline:{head,sha256:hash,content},snapshot:{},policy:{},marketContent,marketBinding:{...marketBinding,candidateSha256:"0".repeat(64)}}),{code:"E_MARKET_BINDING"});
+ const privateContent=JSON.stringify({...JSON.parse(marketContent),privateField:"DO-NOT-PASS-PRIVATE-MARKET"}),count=calls.length;
+ await assert.rejects(()=>runtime.prepare({operationId:"bad-private",baseline:{head,sha256:hash,content},snapshot:{},policy:{},marketContent:privateContent,marketBinding:{...marketBinding,candidateSha256:T.hash(privateContent)}}),{code:"E_MARKET_BINDING"});
+ assert.equal(calls.length,count);assert(!JSON.stringify(calls).includes("DO-NOT-PASS-PRIVATE-MARKET"));
+});
 test("ciphertext IO permits only envelope data and private owned locations",()=>{const dir=fs.mkdtempSync(path.join(os.tmpdir(),"vc-io-"));try{const p=IO.writeBaseline(dir,hash,content);assert.equal(IO.readEncrypted(dir,p),content);assert.equal(IO.writeBaseline(dir,hash,content),p);assert.throws(()=>IO.writeBaseline(dir,T.hash('{"secret":"synthetic"}'),'{"secret":"synthetic"}'));fs.chmodSync(p,0o644);assert.throws(()=>IO.readEncrypted(dir,p));}finally{fs.rmSync(dir,{recursive:true,force:true});}});
 test("real tool adapter sends only sealed data and preserves private header in memory",async()=>{
  const bridge=D.createSession({expectedHead:head,baselineSha256:hash}),calls=[];let received;

@@ -61,7 +61,7 @@
    async load(operationId){const r=await rpc("load",{operationId});return r.record===undefined?r.result:r.record;},
    async save(operationId,record){await rpc("save",{operationId,record});}
   };
-  async function prepare({operationId,baseline,snapshot,policy}){
+  async function prepare({operationId,baseline,snapshot,policy,marketContent,marketBinding}){
    let stage="baseline_write",nativeSession,exited=false,nativeAttempted=false;
    const noteExit=()=>{exited=true;};
    async function stopOwnSession(){
@@ -79,14 +79,24 @@
     return "uncertain";
    }
    try{
+    if(marketContent!==undefined||marketBinding!==undefined){
+     if(!config.passwordFile||typeof marketContent!=="string"||!object(marketBinding)||Object.keys(marketBinding).sort().join(",")!=="baselineSha256,candidateSha256"||![marketBinding.baselineSha256,marketBinding.candidateSha256].every(v=>typeof v==="string"&&/^[a-f0-9]{64}$/.test(v))||transport.hash(marketContent)!==marketBinding.candidateSha256)fail("E_MARKET_BINDING");
+     try{market.validateMarketData(market.parsePublicJSON(marketContent));}catch{fail("E_MARKET_BINDING");}
+    }
     const command=[quote(config.nodeBinary),quote(script("finances_local_io.cjs")),"--write-baseline","--directory",quote(config.privateDirectory),"--sha",quote(baseline.sha256),"--content",quote(baseline.content)].join(" ");
     const saved=(await response(await exec(command))).value;
     if(typeof saved.path!=="string"||!saved.path.startsWith(config.privateDirectory+"/baseline-"))fail("E_BASELINE_PATH");
+    let marketPath;
+    if(marketContent!==undefined||marketBinding!==undefined){
+     const savedMarket=(await response(await exec([quote(config.nodeBinary),quote(script("finances_local_io.cjs")),"--write-public-market","--directory",quote(config.privateDirectory),"--sha",quote(marketBinding.candidateSha256),"--content",quote(marketContent)].join(" ")))).value;
+     marketPath=config.privateDirectory+"/market-"+marketBinding.candidateSha256+".json";
+     if(savedMarket.path!==marketPath)fail("E_MARKET_BINDING");
+    }
     const launchConfig={expectedHead:baseline.head,baselinePath:saved.path,outputDirectory:config.privateDirectory};
     stage="native_start";
     nativeAttempted=true;
     const startCommand=config.passwordFile
-     ? "stty -echo -icanon && "+[quote(config.nodeBinary),quote(script("finances_daily.cjs")),"--serve-file","--expected-head",quote(baseline.head),"--baseline",quote(saved.path),"--output-dir",quote(config.privateDirectory),"--password-file",quote(config.passwordFile)].join(" ")
+     ? "stty -echo -icanon && "+[quote(config.nodeBinary),quote(script("finances_daily.cjs")),"--serve-file","--expected-head",quote(baseline.head),"--baseline",quote(saved.path),"--output-dir",quote(config.privateDirectory),"--password-file",quote(config.passwordFile),...(marketPath?["--market",quote(marketPath)]:[])].join(" ")
      : "stty -echo -icanon && "+quote(config.nativeHelper)+" --serve 4<<< "+quote(JSON.stringify(launchConfig));
     const started=await exec(startCommand,{tty:true,privileged:!config.passwordFile,maxTokens:24000});
     if(object(started)&&sessionId(started.session_id))nativeSession=started.session_id;
@@ -96,13 +106,14 @@
     if(nativeSession===undefined||exited)fail("E_NATIVE_PROCESS");
     if(header.expectedHead!==baseline.head||header.baselineSha256!==baseline.sha256)fail("E_NATIVE_BASELINE");
     stage="seal";
-    const sealed=transport.seal({version:1,operationId,sessionId:header.sessionId,expectedHead:baseline.head,baselineSha256:baseline.sha256,snapshot,policy},header);
+    const sealed=transport.seal({version:1,operationId,sessionId:header.sessionId,expectedHead:baseline.head,baselineSha256:baseline.sha256,snapshot,policy,...(marketBinding?{marketBinding}: {})},header);
     stage="native_submit";
     const submitted=await tools.write_stdin({session_id:nativeSession,chars:JSON.stringify(sealed)+"\n",yield_time_ms:1000,max_output_tokens:2000});
     stage="native_result";
     const result=(await response(submitted,{expectedSessionId:nativeSession,onExit:noteExit})).value;
     if(result.status==="failed")fail((config.passwordFile&&/^[A-Z][A-Z_0-9]{0,79}$/.test(result.code))||nativeCodes.has(result.code)?result.code:"E_NATIVE_VALIDATION");
     if(result.operationId!==operationId||result.expectedHead!==baseline.head||result.baselineSha256!==baseline.sha256)fail("E_NATIVE_RECEIPT");
+    if(marketBinding&&result.validatedMarketSha256!==marketBinding.candidateSha256)fail("E_MARKET_BINDING");
     if(result.status==="unchanged")return result;
     if(result.status!=="validated"||typeof result.candidatePath!=="string"||!result.candidatePath.startsWith(config.privateDirectory+"/candidate-"))fail("E_NATIVE_RECEIPT");
     stage="candidate_read";
@@ -137,7 +148,12 @@
   const publication={github,hash:text=>transport.hash(text),journal};
   if(config.positionEventsEnabled!==undefined&&typeof config.positionEventsEnabled!=="boolean")fail("E_POSITION_CONFIG");
   if(config.positionEventsEnabled===true&&(!Array.isArray(config.positionAccountHashes)||config.positionAccountHashes.length!==1||!config.positionAccountHashes.every(h=>/^[a-f0-9]{64}$/.test(h))||typeof release?.publishRelease!=="function"||typeof market?.readMarketBaseline!=="function"))fail("E_POSITION_CONFIG");
-  const deps={finances:{getLinkedAccounts:args=>tools.mcp__codex_apps__finances_get_linked_accounts(args),query:args=>tools.mcp__codex_apps__finances_query(args)},source,publisher,publication,hash:text=>transport.hash(text),now:()=>Date.now(),local:{prepare,prepareMarket},...(config.positionEventsEnabled===true?{positionAccountHashes:config.positionAccountHashes,release,market}:{})};
+  if(config.openingPositionAuthorization!==undefined){
+   const a=config.openingPositionAuthorization;
+   if(!object(a)||Object.keys(a).sort().join(",")!=="authorizationRef,historySha256,version"||a.version!==1||typeof a.authorizationRef!=="string"||!/^[A-Za-z0-9:._-]{1,160}$/.test(a.authorizationRef)||typeof a.historySha256!=="string"||!/^[a-f0-9]{64}$/.test(a.historySha256)||config.positionEventsEnabled!==true)fail("E_OPENING_CONFIG");
+   if(config.openingMarketRanges!==undefined){try{market.validateRanges(config.openingMarketRanges);}catch{fail("E_OPENING_CONFIG");}}
+  }else if(config.openingMarketRanges!==undefined)fail("E_OPENING_CONFIG");
+  const deps={finances:{getLinkedAccounts:args=>tools.mcp__codex_apps__finances_get_linked_accounts(args),query:args=>tools.mcp__codex_apps__finances_query(args)},source,publisher,publication,hash:text=>transport.hash(text),now:()=>Date.now(),local:{prepare,prepareMarket},...(config.positionEventsEnabled===true?{positionAccountHashes:config.positionAccountHashes,release,market}:{}),...(config.openingPositionAuthorization?{openingPositionAuthorization:config.openingPositionAuthorization,openingMarketRanges:config.openingMarketRanges}: {})};
   async function runScheduled(request){
    request=JSON.parse(JSON.stringify(request));
    if(Object.keys(request).sort().join(",")!=="accountHashes,publish"||request.publish!==true||!Array.isArray(request.accountHashes)||!request.accountHashes.length||request.accountHashes.some(h=>typeof h!=="string"||!/^[a-f0-9]{64}$/.test(h)))fail("E_SCHEDULE_REQUEST");

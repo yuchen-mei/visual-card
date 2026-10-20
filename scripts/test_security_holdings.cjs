@@ -66,8 +66,8 @@ test("nine raw assets become eight securities, with cash counted exactly once",(
   assert.equal(ui.state.data.cashValue,9000);
   assert.equal(ui.state.data.totalAssetValue,12600);
   assert.ok(Math.abs(ui.state.data.holdings.reduce((n,i)=>n+i.weight,0)-100)<1e-10);
-  assert.equal(el("heroValue").textContent,"$12600.00");
-  assert.match(el("meta").textContent,/现金 \$9000\.00$/);
+  assert.equal(el("heroValue").textContent,"$3600.00");
+  assert.equal(el("meta").textContent,"2024-06-30 · USD · 现金 + 股票 / ETF");
   assert.equal(el("holdingCount").textContent,"8 个");
   assert.equal(el("largestHolding").textContent,"EX7 22.2%");
   assert.equal(el("holdingsChart").querySelectorAll(".donut-slice").length,8);
@@ -86,7 +86,8 @@ test("multiple cash accounts merge only in the cash subtotal",()=>{
   assert.equal(ui.state.data.totalAssetValue,2700);
   assert.equal(el("holdingCount").textContent,"1 个");
   assert.equal(el("largestHolding").textContent,"EX0 100.0%");
-  assert.match(el("meta").textContent,/现金 \$2600\.00$/);
+  assert.equal(el("heroValue").textContent,"$100.00");
+  assert.equal(el("meta").textContent,"2024-06-30 · USD · 现金 + 股票 / ETF");
   assert.equal(ui.normalizeCashHoldings(ui.state.data.assetHoldings).filter(ui.isCashHolding).length,1);
   assert.deepEqual(plain(ui.normalizeData(ui.state.data)),plain(ui.state.data));
 });
@@ -112,12 +113,13 @@ test("cash-only and empty snapshots render zero securities without NaN or stale 
     assert.equal(ui.state.data.equityValue,0);
     assert.equal(ui.state.data.cashValue,cash||0);
     assert.equal(ui.state.data.totalAssetValue,cash||0);
-    assert.equal(el("heroValue").textContent,`$${Number(cash||0).toFixed(2)}`);
+    assert.equal(el("heroValue").textContent,"$0.00");
     assert.equal(el("holdingCount").textContent,"0 个");
     assert.equal(el("largestHolding").textContent,"–");
     assert.equal(el("holdingsChart").querySelectorAll(".donut-slice").length,0);
     assert.equal(el("holdingList").querySelectorAll(".holding").length,0);
-    assert.equal(el("holdingList").children[0].textContent,"暂无证券持仓");
+    assert.equal(el("holdingList").children.length,0);
+    assert.equal(el("holdingList").innerHTML,"");
     ui.selectHolding(-1);assert.equal(ui.state.selectedHolding,0);
     assert.deepEqual(plain(ui.normalizeData(ui.state.data)),plain(ui.state.data));
   }
@@ -162,35 +164,39 @@ test("chart, rows, hover previews and selection use the same securities indexes"
   assert.equal(el("holdingsChartTitle").textContent,"EX0");
 });
 
-test("refresh from cash only to securities clamps selection and keeps the total",async()=>{
+test("refresh clamps selection, displays securities and retains cash in the asset total",async()=>{
   const {ui,el,activate}=harness();activate(fixture(700,0));ui.state.selectedHolding=-1;
   ui.nextRaw=fixture(800,2);await ui.refreshData();
   assert.equal(ui.state.selectedHolding,0);
   assert.equal(el("holdingCount").textContent,"2 个");
   assert.equal(el("holdingsChartTitle").textContent,"EX1");
-  assert.equal(el("heroValue").textContent,"$1100.00");
+  assert.equal(el("heroValue").textContent,"$300.00");
+  assert.equal(ui.state.data.cashValue,800);assert.equal(ui.state.data.totalAssetValue,1100);
   ui.nextRaw=fixture(900,0);await ui.refreshData();
   assert.equal(ui.state.selectedHolding,0);
   assert.equal(el("holdingCount").textContent,"0 个");
-  assert.equal(el("heroValue").textContent,"$900.00");
+  assert.equal(el("heroValue").textContent,"$0.00");
+  assert.equal(ui.state.data.cashValue,900);assert.equal(ui.state.data.totalAssetValue,900);
 });
 
 test("production unlock and embedded preview mode share the same cash/securities boundary",async()=>{
   const {ui,el}=harness();ui.nextRaw=fixture(700,2);await ui.unlockWith("synthetic");
-  assert.equal(el("holdingCount").textContent,"2 个");assert.equal(el("heroValue").textContent,"$1000.00");
+  assert.equal(el("holdingCount").textContent,"2 个");assert.equal(el("heroValue").textContent,"$300.00");
+  assert.equal(ui.state.data.cashValue,700);assert.equal(ui.state.data.totalAssetValue,1000);
   const preview=harness(true);await preview.ui.refreshData();
-  assert.equal(preview.el("holdingCount").textContent,"8 个");assert.equal(preview.el("heroValue").textContent,"$12600.00");
+  assert.equal(preview.el("holdingCount").textContent,"8 个");assert.equal(preview.el("heroValue").textContent,"$3600.00");
+  assert.equal(preview.ui.state.data.cashValue,9000);assert.equal(preview.ui.state.data.totalAssetValue,12600);
 });
 
-test("standalone preview file renders eight securities, separate cash and reconciled total",()=>{
+test("standalone preview displays eight securities and retains the reconciled asset total",()=>{
   const {ui,el,activate}=harness(false,previewHtml),raw=freeze(fixture()),before=JSON.stringify(raw);
   activate(raw);
   assert.equal(ui.state.data.holdings.length,8);
   assert.equal(ui.state.data.equityValue,3600);
   assert.equal(ui.state.data.cashValue,9000);
   assert.equal(ui.state.data.totalAssetValue,12600);
-  assert.equal(el("heroValue").textContent,"$12600.00");
-  assert.match(el("meta").textContent,/现金 \$9000\.00$/);
+  assert.equal(el("heroValue").textContent,"$3600.00");
+  assert.equal(el("meta").textContent,"2024-06-30 · USD · 现金 + 股票 / ETF");
   assert.equal(el("holdingCount").textContent,"8 个");
   assert.equal(el("largestHolding").textContent,"EX7 22.2%");
   assert.equal(el("holdingsChart").querySelectorAll(".donut-slice").length,8);
@@ -253,24 +259,29 @@ test("standalone preview cash only, empty and zero cash preserve all asset total
   for(const [cash,count] of [[700,0],[0,0],[null,0],[0,2],[null,2]]){
     const {ui,el,activate}=harness(false,previewHtml);activate(fixture(cash,count));
     assert.equal(ui.state.data.totalAssetValue,(cash||0)+(count?300:0));
+    assert.equal(ui.state.data.cashValue,cash||0);
+    assert.equal(el("heroValue").textContent,count?"$300.00":"$0.00");
     assert.equal(el("holdingCount").textContent,`${count} 个`);
     assert.equal(el("holdingsChart").querySelectorAll(".donut-slice").length,count);
     assert.deepEqual(plain(ui.normalizeData(ui.state.data)),plain(ui.state.data));
-    if(!count){assert.equal(el("largestHolding").textContent,"–");assert.equal(el("holdingList").children[0].textContent,"暂无证券持仓");assert.equal(ui.state.data.trading.length,0);}
+    if(!count){assert.equal(el("largestHolding").textContent,"–");assert.equal(el("holdingList").children.length,0);assert.equal(el("holdingList").innerHTML,"");assert.equal(ui.state.data.trading.length,0);}
   }
 });
 
 test("standalone preview refresh, unlock, selection and embedded mode execute its own functions",async()=>{
   const {ui,el,activate}=harness(false,previewHtml);activate(fixture(700,0));ui.state.selectedHolding=-1;
   ui.nextRaw=fixture(800,2);await ui.refreshData();
-  assert.equal(ui.state.selectedHolding,0);assert.equal(el("heroValue").textContent,"$1100.00");
+  assert.equal(ui.state.selectedHolding,0);assert.equal(el("heroValue").textContent,"$300.00");
+  assert.equal(ui.state.data.cashValue,800);assert.equal(ui.state.data.totalAssetValue,1100);
   ui.preview.holding=1;ui.updateHoldingSelection();assert.equal(el("holdingsChartTitle").textContent,"EX0");
   assert.equal(el("holdingsChartPct").textContent,"33.3%");
   ui.selectHolding(100);assert.equal(ui.state.selectedHolding,1);
   ui.nextRaw=fixture(900,0);await ui.unlockWith("synthetic");
-  assert.equal(el("holdingCount").textContent,"0 个");assert.equal(el("heroValue").textContent,"$900.00");
+  assert.equal(el("holdingCount").textContent,"0 个");assert.equal(el("heroValue").textContent,"$0.00");
+  assert.equal(ui.state.data.cashValue,900);assert.equal(ui.state.data.totalAssetValue,900);
   const embedded=harness(true,previewHtml);await embedded.ui.refreshData();
-  assert.equal(embedded.el("holdingCount").textContent,"8 个");assert.equal(embedded.el("heroValue").textContent,"$12600.00");
+  assert.equal(embedded.el("holdingCount").textContent,"8 个");assert.equal(embedded.el("heroValue").textContent,"$3600.00");
+  assert.equal(embedded.ui.state.data.cashValue,9000);assert.equal(embedded.ui.state.data.totalAssetValue,12600);
 });
 
 test("standalone preview groups cash income without changing totals, kinds or principal",()=>{
@@ -346,7 +357,7 @@ test("standalone preview remains byte-identical to production as in the stable v
 });
 
 for (const [page, sourceHtml] of [["production",html],["standalone preview",previewHtml]]) {
-  test(`${page} annual closed-security name survives a single price point`,()=>{
+  test(`${page} annual closed-security canonical name and real orders survive a single price point`,()=>{
     for(const nameField of ["nameZh","name"]){
       const {ui,activate}=harness(false,sourceHtml),raw=fixture(700,0);
       raw.historyStatus={state:"preserved",asOf:"2024-06-30",reason:"history_not_revalidated"};
@@ -355,13 +366,22 @@ for (const [page, sourceHtml] of [["production",html],["standalone preview",prev
         prices:[{date:"2024-01-10",close:10}],
         orders:[{date:"2024-01-10",side:"buy",shares:1,price:10},{date:"2024-06-15",side:"sell",shares:1,price:12}]
       }}};
-      const control=plain(raw);delete control.historySnapshot.trading.SOLD[nameField];
+      // Annual math consumes the current raw ledger; the archived copy remains
+      // available for saved names and preserved trading presentation.
+      raw.trading=plain(raw.historySnapshot.trading);
+      const control=plain(raw);delete control.historySnapshot.trading.SOLD[nameField];delete control.trading.SOLD[nameField];
       const expected=harness(false,sourceHtml);expected.activate(control);
       const expectedSummary=plain(expected.ui.computeAnnualSummary());
       freeze(raw);const before=JSON.stringify(raw);activate(raw);
-      assert.equal(ui.state.data.trading.length,0);
+      assert.equal(ui.state.data.trading.length,1);
+      assert.equal(ui.state.data.trading[0].prices.length,1);
+      assert.equal(ui.state.data.trading[0].orders.length,2);
+      assert.equal(ui.state.data.trading[0].returnPct,null);
       const summary=plain(ui.computeAnnualSummary());
-      assert.equal(summary.tickers.length,1);assert.equal(summary.tickers[0].name,"已卖出证券中文");
+      assert.equal(summary.tickers.length,1);
+      // The committed label contract uses nameZh for a trading-only security;
+      // a name-only alias must not affect its quantities or annual result.
+      assert.equal(summary.tickers[0].name,nameField==="nameZh"?"已卖出证券中文":"");
       assert.equal(summary.tickers[0].total,2);
       assert.deepEqual(summary.years,expectedSummary.years);
       assert.deepEqual(summary.tickers[0].byYear,expectedSummary.tickers[0].byYear);
@@ -379,6 +399,10 @@ for (const [page, sourceHtml] of [["production",html],["standalone preview",prev
         {ticker:"USD",type:"cash",is_cash_equivalent:true,nameZh:"合成银行来源",value:600},
         {ticker:"USD",type:"etf",nameZh:"基金中文",value:12}
       ],trading:{USD:trade({nameZh:"USD"})}};
+      raw.trading={USD:trade({nameZh:"USD"})};
+      const archiveOnly=plain(raw);archiveOnly.trading={};
+      const archiveHarness=harness(false,sourceHtml);archiveHarness.activate(archiveOnly);
+      assert.deepEqual(plain(archiveHarness.ui.computeAnnualSummary().tickers),[]);
       const control=plain(raw);control.historySnapshot.holdings.shift();
       const expected=harness(false,sourceHtml);expected.activate(control);
       const expectedSummary=plain(expected.ui.computeAnnualSummary());

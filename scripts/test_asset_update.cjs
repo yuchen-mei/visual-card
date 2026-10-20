@@ -14,6 +14,52 @@ function snapshot(){
  return {schemaVersion:2,mode:"assets",source:"Finances",currency:"USD",fetchedAt:"2026-10-18T02:00:00Z",coverage:{accountsComplete:true,allPagesFetched:true,accountIds:copy(policy.accountIds)},accounts:[{id:"synthetic-broker",type:"brokerage",currency:"USD",cashCents:100000,securitiesCents:15000,totalCents:115000,coverage:{balances:copy(proof),holdings:copy(proof)}},{id:"synthetic-bank",type:"checking",currency:"USD",cashCents:50000,securitiesCents:0,totalCents:50000,coverage:{balances:copy(proof),holdings:copy(proof)}}],positions:[{accountId:"synthetic-broker",ticker:"DEMO",type:"stock",shares:5,valueCents:15000,priceAsOf:"2026-10-17"}],reconciliation:{independentSourceTotals:true,totalValueCents:165000,cashCents:150000}};
 }
 const build=(s=snapshot(),old=oldData(),p=policy)=>U.buildAssetPayload(s,old,{html,now,policy:p});
+function openingFixture(){
+ const previous=oldData();previous.trading.DEMO.orders[0].shares=3;
+ previous.income=[{date:"2025-06-30",amount:25,kind:"cash_interest"}];
+ previous.historySnapshot=copy(previous);
+ previous.historyStatus={state:"preserved",asOf:previous.asOf};
+ previous.tradeSync={version:1,baselineCutoff:previous.asOf,accountHashes:[U.hash("synthetic-broker")],transactions:[],allPagesFetched:true,dateBasis:"provider-settlement-date",historyFromInception:false};
+ const approved={...copy(policy),openingPositionAuthorization:{version:1,authorizationRef:"synthetic-approved-opening",historySha256:U.hash(U.canonical(previous.historySnapshot))}};
+ const market={asOf:"2026-10-17",source:"yahoo-chart",generatedAt:"2026-10-18T00:00:00Z",prices:{DEMO:[{date:"2024-12-31",close:14},{date:"2025-01-02",close:15},{date:"2025-12-31",close:18},{date:"2026-10-17",close:30}]}};
+ return {previous,approved,market};
+}
+function openingSnapshot(){const s=snapshot();s.tradeUpdates={version:1,accountIds:["synthetic-broker"],allPagesFetched:true,dateBasis:"provider-settlement-date",historyFromInception:false,sourceAsOf:null,queriedFrom:null,rows:[]};return s;}
+test("opening assets run actual annual functions and preserve history, income and current return method",()=>{
+ const {previous,approved,market}=openingFixture(),s=openingSnapshot();
+ const data=U.buildAssetPayload(s,previous,{html,now,policy:approved,market});
+ assert.equal(data.trading.DEMO.openingPosition.shares,2);assert.deepEqual(data.trading.DEMO.orders,previous.trading.DEMO.orders);assert.deepEqual(data.income,previous.income);assert.deepEqual(data.performance,previous.performance);assert.deepEqual(data.historySnapshot,previous.historySnapshot);
+ const ui=U.browserContract(html);ui.state.raw=data;ui.state.data=ui.normalizeData(data);ui.state.marketPrices=market;
+ const years=ui.computeAnnualSummary().years;assert.equal(years[0].startValue,28);assert.equal(years[0].buys,45);assert.equal(years[0].income,25);assert.equal(years[0].stockPnl,17);
+});
+test("opening assets reject missing prices or a post-anchor quantity gap",()=>{
+ const {previous,approved,market}=openingFixture();
+ assert.throws(()=>U.buildAssetPayload(openingSnapshot(),previous,{html,now,policy:approved}),{message:"OPENING_MARKET_REQUIRED"});
+ market.prices.DEMO.shift();assert.throws(()=>U.buildAssetPayload(openingSnapshot(),previous,{html,now,policy:approved,market}),{message:"OPENING_PRICE_COVERAGE_REQUIRED"});
+ const s=openingSnapshot();s.positions[0].shares++;assert.throws(()=>U.buildAssetPayload(s,previous,{html,now,policy:approved,market}),{message:"OPENING_CURRENT_QUANTITY_MISMATCH"});
+});
+test("opening roundtrip and repeat business content never re-encrypt",async()=>{
+ const {previous,approved,market}=openingFixture(),s=openingSnapshot(),password="synthetic-opening-update";
+ const bytes=Buffer.from(JSON.stringify(U.encrypt(previous,password)));s.previousCiphertextSha256=U.hash(bytes);
+ const first=await U.prepareUpdate({snapshot:s,existingBytes:bytes,password,html,now,policy:approved,market});assert.equal(first.status,"changed");
+ s.previousCiphertextSha256=U.hash(first.bytes);
+ const second=await U.prepareUpdate({snapshot:s,existingBytes:first.bytes,password,html,now,policy:approved,market,encryptFn(){assert.fail("unchanged must not encrypt");}});assert.equal(second.status,"unchanged");
+});
+test("opening rejects future market dates and quotes before encryption",async()=>{
+ for(const addQuote of [false,true]){
+  const {previous,approved,market}=openingFixture(),s=openingSnapshot(),password="synthetic-future-market";
+  market.asOf="2026-10-30";if(addQuote)market.prices.DEMO.push({date:market.asOf,close:40});
+  const bytes=Buffer.from(JSON.stringify(U.encrypt(previous,password)));s.previousCiphertextSha256=U.hash(bytes);
+  await assert.rejects(()=>U.prepareUpdate({snapshot:s,existingBytes:bytes,password,html,now,policy:approved,market,encryptFn(){assert.fail("future quote must never encrypt");}}),{message:"OPENING_MARKET_AFTER_SNAPSHOT"});
+ }
+});
+test("opening annual validation cannot silently drop another unpriced security",()=>{
+ const {previous,approved,market}=openingFixture(),s=openingSnapshot();
+ for(const data of [previous,previous.historySnapshot]){data.trading.EXTRA={orders:[{date:"2025-02-03",side:"buy",shares:1,price:10}]};data.holdings.push({ticker:"EXTRA",type:"stock",shares:1,value:10});}
+ approved.openingPositionAuthorization.historySha256=U.hash(U.canonical(previous.historySnapshot));
+ s.positions.push({accountId:"synthetic-broker",ticker:"EXTRA",type:"stock",shares:1,valueCents:1000,priceAsOf:"2026-10-17"});s.accounts[0].securitiesCents+=1000;s.accounts[0].totalCents+=1000;s.reconciliation.totalValueCents+=1000;
+ assert.throws(()=>U.buildAssetPayload(s,previous,{html,now,policy:approved,market}),{message:"OPENING_MARKET_SECURITY_REQUIRED"});
+});
 function holdingsSnapshot(){
  const s=snapshot();s.schemaVersion=3;
  s.reconciliation={...s.reconciliation,basis:"holdings-and-depository-balances",independentSourceTotals:false};

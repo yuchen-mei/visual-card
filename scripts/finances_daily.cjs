@@ -5,6 +5,7 @@
 // activation option. Supports an existing private password file or inherited FD.
 const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto"),readline=require("node:readline");
 const U=require("./update_finances.cjs");
+const M=require("./finances_market.cjs");
 const {positionEffects}=require("./finances_positions.cjs");
 const ROOT=path.resolve(__dirname,"..");
 const PROTOCOL="visual-card-rsa-oaep-sha256-v1";
@@ -84,14 +85,32 @@ function writeMetadata(file,value){
   fs.linkSync(temporary,file);fs.unlinkSync(temporary);syncDirectory(dir);
  }finally{if(fd!==undefined)fs.closeSync(fd);if(exists(temporary))fs.unlinkSync(temporary);}
 }
-async function prepareCandidate({packet,existingBytes,password,html,outputDirectory,now=Date.now()}){
+function candidateMarket(packet,marketContent){
+ const binding=packet.marketBinding;
+ if(binding===undefined&&marketContent===undefined)return {};
+ check(binding&&typeof binding==="object"&&!Array.isArray(binding)
+  &&Object.keys(binding).sort().join(",")==="baselineSha256,candidateSha256"
+  &&[binding.baselineSha256,binding.candidateSha256].every(value=>typeof value==="string"&&/^[a-f0-9]{64}$/.test(value)),"INVALID_MARKET_BINDING");
+ check(typeof marketContent==="string"&&Buffer.byteLength(marketContent)<=24*1024*1024,"INVALID_MARKET_CANDIDATE");
+ check(U.hash(marketContent)===binding.candidateSha256,"MARKET_CANDIDATE_CHANGED");
+ let market;try{market=M.validateMarketData(M.parsePublicJSON(marketContent));}catch{throw new U.ValidationError("INVALID_MARKET_CANDIDATE");}
+ return {market,marketBinding:binding};
+}
+function readMarketFile(filename){
+ const requested=path.resolve(filename);privateDirectory(path.dirname(requested));
+ check((fs.lstatSync(requested).mode&0o7777)===0o600,"INVALID_MARKET_FILE");
+ const bytes=privateBytes(requested);
+ try{return new TextDecoder("utf-8",{fatal:true}).decode(bytes);}catch{throw new U.ValidationError("INVALID_MARKET_FILE");}
+}
+async function prepareCandidate({packet,existingBytes,password,html,marketContent,outputDirectory,now=Date.now()}){
  packet=JSON.parse(JSON.stringify(packet));existingBytes=Buffer.from(existingBytes);
  check(packet?.version===1&&typeof packet.operationId==="string"&&/^[a-zA-Z0-9:._-]{1,120}$/.test(packet.operationId),"INVALID_OPERATION");
- check(Object.keys(packet).every(k=>["version","operationId","sessionId","expectedHead","baselineSha256","snapshot","policy"].includes(k)),"UNEXPECTED_PACKET_FIELDS");
+ check(Object.keys(packet).every(k=>["version","operationId","sessionId","expectedHead","baselineSha256","snapshot","policy","marketBinding"].includes(k)),"UNEXPECTED_PACKET_FIELDS");
  check(packet.snapshot?.mode==="assets","DAILY_MODE_MUST_BE_ASSETS");
  check(/^[a-f0-9]{40}$/.test(packet.expectedHead)&&/^[a-f0-9]{64}$/.test(packet.baselineSha256),"INVALID_BASELINE_BINDING");
  check(packet.baselineSha256===U.hash(existingBytes)&&packet.snapshot.previousCiphertextSha256===packet.baselineSha256,"BASELINE_CHANGED");
- const base={operationId:packet.operationId,expectedHead:packet.expectedHead,baselineSha256:packet.baselineSha256,publication:"disabled"};
+ const {market,marketBinding}=candidateMarket(packet,marketContent);
+ const base={operationId:packet.operationId,expectedHead:packet.expectedHead,baselineSha256:packet.baselineSha256,publication:"disabled",...(marketBinding?{validatedMarketSha256:marketBinding.candidateSha256}:{})};
  const dir=privateDirectory(outputDirectory),operationHash=U.hash(packet.operationId),stem=path.join(dir,`candidate-${operationHash.slice(0,24)}`);
  const candidatePath=`${stem}.enc.json`,bindingPath=`${stem}.binding.json`,receiptPath=`${stem}.receipt.json`,lockPath=`${stem}.lock`;
  // Never reclaim a lock by PID/age: an interrupted owner requires explicit
@@ -101,11 +120,13 @@ async function prepareCandidate({packet,existingBytes,password,html,outputDirect
  try{
   writeMetadata(ownerPath,{version:1,pid:process.pid,token:lockToken});syncDirectory(dir);
   const oldEnvelope=JSON.parse(existingBytes),previous=U.decrypt(oldEnvelope,password);
-  const desired=U.buildAssetPayload(packet.snapshot,previous,{html,now,policy:packet.policy});
+  if(packet.policy?.openingPositionAuthorization!==undefined||previous.openingPositionAudit!==undefined)check(marketBinding,"MARKET_BINDING_REQUIRED");
+  const desired=U.buildAssetPayload(packet.snapshot,previous,{html,now,policy:packet.policy,market});
+  if(desired.openingPositionAudit!==undefined)check(marketBinding,"MARKET_BINDING_REQUIRED");
   const events=positionEffects(previous,desired);
   const effects=desired.positionLifecycle?{positionEvents:events}:{};
   const desiredBusiness=U.canonical(U.businessData(desired));
-  const binding={version:1,operationHash,expectedHead:packet.expectedHead,baselineSha256:packet.baselineSha256,businessSha256:U.hash(desiredBusiness)};
+  const binding={version:1,operationHash,expectedHead:packet.expectedHead,baselineSha256:packet.baselineSha256,businessSha256:U.hash(desiredBusiness),...(marketBinding?{marketBinding}:{})};
   const hasCandidate=exists(candidatePath),hasBinding=exists(bindingPath),hasReceipt=exists(receiptPath);
   if(hasCandidate||hasBinding||hasReceipt){
    try{
@@ -126,7 +147,7 @@ async function prepareCandidate({packet,existingBytes,password,html,outputDirect
   // Persist the original binding before creating ciphertext. A receipt-less
   // candidate can only be recovered with this independently saved baseline.
   writeMetadata(bindingPath,binding);
-  const result=await U.prepareUpdate({snapshot:packet.snapshot,policy:packet.policy,existingBytes,password,html,now});
+  const result=await U.prepareUpdate({snapshot:packet.snapshot,policy:packet.policy,existingBytes,password,html,market,now});
   check(result.status==="changed","E_RECOVERY_REQUIRED");
   const fd=fs.openSync(candidatePath,"wx",0o600);try{fs.writeFileSync(fd,result.bytes);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
   syncDirectory(dir);
@@ -138,9 +159,10 @@ async function prepareCandidate({packet,existingBytes,password,html,outputDirect
  }
 }
 async function main(args){
- if(args.length===1&&args[0]==="--help"){console.log("Usage: node scripts/finances_daily.cjs --serve --expected-head SHA40 --baseline ENCRYPTED_JSON --output-dir PRIVATE_DIRECTORY\nOr: node scripts/finances_daily.cjs --serve-file --expected-head SHA40 --baseline ENCRYPTED_JSON --output-dir PRIVATE_DIRECTORY --password-file PRIVATE_PASSWORD_FILE\n--serve uses inherited VISUAL_CARD_PASSWORD_FD. --serve-file requires an existing owner-only 0600 regular file outside the repository, in an owner-only 0700 directory. Reads one sealed stdin line, writes only a validated encrypted candidate. Never publishes. Treat the entire transport header as private runtime data: never display or persist it.");return;}
+ if(args.length===1&&args[0]==="--help"){console.log("Usage: node scripts/finances_daily.cjs --serve --expected-head SHA40 --baseline ENCRYPTED_JSON --output-dir PRIVATE_DIRECTORY [--market PRIVATE_PUBLIC_MARKET_JSON]\nOr: node scripts/finances_daily.cjs --serve-file --expected-head SHA40 --baseline ENCRYPTED_JSON --output-dir PRIVATE_DIRECTORY --password-file PRIVATE_PASSWORD_FILE [--market PRIVATE_PUBLIC_MARKET_JSON]\n--serve uses inherited VISUAL_CARD_PASSWORD_FD. --serve-file requires an existing owner-only 0600 regular file outside the repository, in an owner-only 0700 directory. --market requires the same private file protections and a matching sealed marketBinding. Reads one sealed stdin line, writes only a validated encrypted candidate. Never publishes. Treat the entire transport header as private runtime data: never display or persist it.");return;}
  const fileMode=args[0]==="--serve-file";
- check(((fileMode&&args.length===9&&args[7]==="--password-file")||(!fileMode&&args[0]==="--serve"&&args.length===7))&&args[1]==="--expected-head"&&args[3]==="--baseline"&&args[5]==="--output-dir","INVALID_ARGUMENTS");
+ const baseCount=fileMode?9:7,hasMarket=args.length===baseCount+2&&args[baseCount]==="--market";
+ check((args.length===baseCount||hasMarket)&&((fileMode&&args[7]==="--password-file")||(!fileMode&&args[0]==="--serve"))&&args[1]==="--expected-head"&&args[3]==="--baseline"&&args[5]==="--output-dir","INVALID_ARGUMENTS");
  const expectedHead=args[2],baselinePath=fs.realpathSync(args[4]),outputDirectory=privateDirectory(args[6]);
  check(fs.statSync(baselinePath).isFile(),"INVALID_BASELINE_FILE");
  const existingBytes=fs.readFileSync(baselinePath);U.validateEnvelope(JSON.parse(existingBytes));
@@ -161,7 +183,8 @@ async function main(args){
   check(line.length<=410000,"INVALID_SEALED_INPUT");
   const packet=session.open(JSON.parse(line));
   check(U.hash(fs.readFileSync(baselinePath))===U.hash(existingBytes),"BASELINE_CHANGED");
-  const result=await prepareCandidate({packet,existingBytes,password,html:fs.readFileSync(path.join(ROOT,"index.html"),"utf8"),outputDirectory});
+  const marketContent=hasMarket?readMarketFile(args[baseCount+1]):undefined;
+  const result=await prepareCandidate({packet,existingBytes,password,html:fs.readFileSync(path.join(ROOT,"index.html"),"utf8"),marketContent,outputDirectory});
   process.stdout.write(JSON.stringify(result)+"\n");
  }catch(error){process.stderr.write(JSON.stringify({status:"failed",code:error instanceof U.ValidationError?error.message:"DAILY_PREPARATION_FAILED",productionPreserved:true})+"\n");process.exitCode=1;}finally{rl.close();process.exit(process.exitCode||0);}});
  rl.once("close",()=>{if(!sawLine){clearTimeout(timer);process.exitCode=1;}});

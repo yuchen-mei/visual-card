@@ -9,6 +9,7 @@ const crypto = require("node:crypto");
 const vm = require("node:vm");
 const {applyTradeUpdates} = require("./finances_trades.cjs");
 const {applyPositionLifecycle} = require("./finances_positions.cjs");
+const {applyOpeningPositions, validateOpeningQuantities} = require("./finances_opening.cjs");
 const ROOT = path.resolve(__dirname, "..");
 const DAY = 86400000;
 class ValidationError extends Error {}
@@ -78,7 +79,7 @@ function encrypt(data, password, iterations = 250000) {
 
 // Run the actual browser functions rather than maintaining a second UI formula.
 function browserContract(html) {
-  const names = ["base64ToBytes", "deriveKey", "decryptPayload", "normalizeData", "isCashHolding", "normalizeCashHoldings", "isCashInterestItem", "normalizeCashInterestItems", "normalizePerformanceData", "normalizePerformanceItem", "isStockEtfPerformanceItem", "summarizeTradableHoldingPerformance", "calculateReturnPct", "isTradableHolding", "stableHash", "previewTradingDates", "generatePreviewTradingForHolding", "normalizeTradingData", "numericOrNull", "holdingGain", "holdingReturnPct", "dayTime", "closeOnOrBefore", "sharesAt", "markPrice", "annualPositions", "normalizePublicPriceRows", "priceRowsFromMarketData", "computeAnnualSummary"];
+  const names = ["base64ToBytes", "deriveKey", "decryptPayload", "normalizeData", "isCashHolding", "normalizeCashHoldings", "isCashInterestItem", "normalizeCashInterestItems", "normalizePerformanceData", "normalizePerformanceItem", "isStockEtfPerformanceItem", "summarizeTradableHoldingPerformance", "calculateReturnPct", "isTradableHolding", "stableHash", "previewTradingDates", "generatePreviewTradingForHolding", "normalizeTradingData", "numericOrNull", "holdingGain", "holdingReturnPct", "dayTime", "closeOnOrBefore", "sharesAt", "openingMarkPrice", "validateOpeningPosition", "markPrice", "annualPositions", "normalizePublicPriceRows", "priceRowsFromMarketData", "computeAnnualSummary"];
   const functions = names.map(name => {
     const match = html.match(new RegExp(`^    (?:async )?function ${name}\\([^]*?^    }`, "m"));
     requireThat(match, "BROWSER_CONTRACT_CHANGED"); return match[0];
@@ -580,7 +581,7 @@ function buildBasisRevisionPayload(snapshot, previous, {html, policy} = {}) {
   same(normalized.userConfirmedCapital, confirmed, "BROWSER_MANUAL_CAPITAL_MISMATCH");
   return next;
 }
-function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy} = {}) {
+function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy, market} = {}) {
   requireThat([2, 3].includes(snapshot?.schemaVersion) && snapshot.mode === "assets" && snapshot.source === "Finances" && snapshot.currency === "USD", "UNSUPPORTED_ASSET_SCHEMA");
   const holdingsValuation = snapshot.schemaVersion === 3;
   fresh(snapshot.fetchedAt, now);
@@ -662,11 +663,40 @@ function buildAssetPayload(snapshot, previous, {now = Date.now(), html, policy} 
   if(previous.userConfirmedCapital)validateManualCapital(previous.userConfirmedCapital);
   try { applyTradeUpdates(next, previous, snapshot); }
   catch (error) { throw new ValidationError(/^[A-Z][A-Z_0-9]{0,79}$/.test(error.code) ? error.code : "TRADE_UPDATE_INVALID"); }
+  try { applyOpeningPositions(next, previous, snapshot, policy); validateOpeningQuantities(next, snapshot); }
+  catch (error) { throw new ValidationError(/^[A-Z][A-Z_0-9]{0,79}$/.test(error.code) ? error.code : "OPENING_UPDATE_INVALID"); }
   try { applyPositionLifecycle(next, previous, snapshot, policy); }
   catch (error) { throw new ValidationError(/^[A-Z][A-Z_0-9]{0,79}$/.test(error.code) ? error.code : "POSITION_UPDATE_INVALID"); }
   applyUserConfirmedReturnMethod(next, previous, snapshot, {html, policy});
   // Verify through the actual production display path, with old history frozen.
   const ui=browserContract(html), normalized=ui.normalizeData(clone(next));
+  if (next.openingPositionAudit !== undefined) {
+    requireThat(market && typeof market === "object" && market.prices, "OPENING_MARKET_REQUIRED");
+    try {
+      require("./finances_market.cjs").validateMarketData(market);
+      requireThat(date(market.asOf)<=date(snapshot.fetchedAt.slice(0,10)), "OPENING_MARKET_AFTER_SNAPSHOT");
+      ui.state.raw=clone(next); ui.state.data=normalized; ui.state.marketPrices=clone(market);
+      const annualPositions=ui.annualPositions(next);
+      requireThat(annualPositions.every(position=>position.rows.length>0), "OPENING_MARKET_SECURITY_REQUIRED");
+      const annual=ui.computeAnnualSummary();
+      requireThat(annual && Array.isArray(annual.years) && annual.years.length > 0, "OPENING_ANNUAL_REQUIRED");
+      for (const year of annual.years) {
+        const start=ui.dayTime(`${year.year-1}-12-31`),end=year.current?ui.dayTime(next.asOf):ui.dayTime(`${year.year}-12-31`);
+        for(const position of annualPositions){
+          if(ui.sharesAt(position.orders,start,position.openingPosition)>0)ui.openingMarkPrice(position.rows,start);
+          if(ui.sharesAt(position.orders,year.current?Infinity:end,position.openingPosition)>0)ui.openingMarkPrice(position.rows,end);
+        }
+        for (const key of ["stockPnl","income","startValue","endValue","buys","sells","basis","pnl"]) requireThat(Number.isFinite(year[key]), "OPENING_ANNUAL_NONFINITE");
+        requireThat(year.returnPct === null || Number.isFinite(year.returnPct), "OPENING_ANNUAL_NONFINITE");
+        close(year.stockPnl, year.endValue-year.startValue-year.buys+year.sells, "OPENING_ANNUAL_ARITHMETIC");
+        close(year.pnl, year.stockPnl+year.income, "OPENING_ANNUAL_ARITHMETIC");
+        close(year.stockPnl, sum([...year.byTicker.values()]), "OPENING_ANNUAL_ARITHMETIC");
+      }
+    } catch (error) {
+      const code=error?.code || error?.message;
+      throw new ValidationError(/^[A-Z][A-Z_0-9]{0,79}$/.test(code) ? code : "OPENING_ANNUAL_INVALID");
+    }
+  }
   same(roundedCents(normalized.totalAssetValue),total,"BROWSER_BALANCE_MISMATCH");
   same(roundedCents(normalized.equityValue),total-cash,"BROWSER_SECURITIES_MISMATCH");
   same(roundedCents(normalized.cashValue),cash,"BROWSER_CASH_MISMATCH");
@@ -690,7 +720,7 @@ async function prepareUpdate({snapshot, existingBytes, password, html, market, n
   requireThat(typeof snapshot?.previousCiphertextSha256 === "string" && snapshot.previousCiphertextSha256 === hash(existingBytes), "BASELINE_CHANGED");
   const envelope = JSON.parse(existingBytes.toString("utf8"));
   const previous = decrypt(envelope, password);
-  const next = snapshot.mode === "assets" ? buildAssetPayload(snapshot, previous, {html,now,policy}) : snapshot.mode === "history-review" ? buildHistoricalReviewPayload(snapshot,previous,{html,policy}) : snapshot.mode === "basis-revision" ? buildBasisRevisionPayload(snapshot,previous,{html,policy}) : buildPayload(snapshot, previous, {html, market, now, policy});
+  const next = snapshot.mode === "assets" ? buildAssetPayload(snapshot, previous, {html,now,policy,market}) : snapshot.mode === "history-review" ? buildHistoricalReviewPayload(snapshot,previous,{html,policy}) : snapshot.mode === "basis-revision" ? buildBasisRevisionPayload(snapshot,previous,{html,policy}) : buildPayload(snapshot, previous, {html, market, now, policy});
   if (canonical(businessData(previous)) === canonical(businessData(next))) return {status: "unchanged"};
   const encrypted = encryptFn(next, password, envelope.iterations);
   same(decrypt(encrypted, password), next, "ENCRYPTION_ROUNDTRIP_FAILED");

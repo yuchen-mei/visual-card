@@ -3350,13 +3350,58 @@
       return found >= 0 ? rows[found].close : null;
     }
 
-    function sharesAt(orders, time) {
-      let shares = 0;
+    function sharesAt(orders, time, openingPosition = null) {
+      let shares = openingPosition && time >= openingPosition.time ? openingPosition.shares : 0;
       for (const order of orders) {
         if (order.time > time) break;
         shares += order.side === "sell" ? -order.shares : order.shares;
       }
       return Math.abs(shares) < 1e-9 ? 0 : shares;
+    }
+
+    function openingMarkPrice(rows, time) {
+      let mark = null;
+      for (const row of rows) {
+        if (row.time > time) break;
+        mark = row;
+      }
+      if (!mark || !Number.isFinite(time) || !(mark.close > 0)
+        || Math.round((time - mark.time) / DAY_MS) > 7) {
+        throw new Error("OPENING_PRICE_COVERAGE_REQUIRED");
+      }
+      return mark.close;
+    }
+
+    function validateOpeningPosition(opening, orders, rows) {
+      if (opening === undefined) return null;
+      if (!opening || typeof opening !== "object" || Array.isArray(opening)
+        || Object.keys(opening).sort().join(",") !== "asOf,shares,version"
+        || opening.version !== 1 || typeof opening.asOf !== "string"
+        || !/^\d{4}-12-31$/.test(opening.asOf)
+        || !Number.isFinite(opening.shares) || opening.shares < 0) {
+        throw new Error("INVALID_OPENING_POSITION");
+      }
+      const time = dayTime(opening.asOf);
+      if (time === null || !Array.isArray(orders)
+        || orders.some((order) => dayTime(order?.date) === null || dayTime(order.date) <= time)) {
+        throw new Error("OPENING_ORDER_BOUNDARY_CONFLICT");
+      }
+      if (opening.shares === 0) return null;
+      let shares = opening.shares;
+      const sortedOrders = [...orders].sort((a, b) => a.date.localeCompare(b.date));
+      for (let index = 0; index < sortedOrders.length; index++) {
+        const order = sortedOrders[index];
+        if (!["buy", "sell"].includes(order.side) || !Number.isFinite(order.shares) || order.shares <= 0) {
+          throw new Error("INVALID_OPENING_ORDER");
+        }
+        shares += order.side === "sell" ? -order.shares : order.shares;
+        // Settlement dates do not establish an intraday ordering.
+        if (sortedOrders[index + 1]?.date !== order.date && shares < -1e-9) {
+          throw new Error("NEGATIVE_OPENING_POSITION_HISTORY");
+        }
+      }
+      openingMarkPrice(rows, time);
+      return {asOf: opening.asOf, time, shares: opening.shares};
     }
 
     // 估值价优先用当日或之前最近的收盘价；早于价格序列的持仓退回用最近一笔成交价。
@@ -3397,9 +3442,11 @@
             : [];
           const rows = (publicRows.length ? publicRows : normalizePublicPriceRows(item?.prices))
             .filter((row) => row.time <= cutoff);
-          return { ticker, orders, rows };
+          const openingPosition = item.openingPosition === undefined ? null
+            : validateOpeningPosition(item.openingPosition, item.orders || [], rows);
+          return { ticker, orders, rows, ...(openingPosition ? {openingPosition} : {}) };
         })
-        .filter((position) => position.orders.length);
+        .filter((position) => position.orders.length || position.openingPosition);
     }
 
     function computeAnnualSummary() {
@@ -3418,12 +3465,17 @@
         ...priced.map((position) => position.rows[position.rows.length - 1].time)
       );
       const latestTime = Number.isFinite(latestCandidate) ? latestCandidate : Date.now();
+      if (priced.some((position) => position.openingPosition?.time >= latestTime)) {
+        throw new Error("OPENING_CALCULATION_BOUNDARY_CONFLICT");
+      }
       // 当前市值按最新收盘价计算，标注的日期也用最新收盘日，而不是数据的 asOf。
       const latestPriceTime = priced.length
         ? Math.max(...priced.map((position) => position.rows[position.rows.length - 1].time))
         : latestTime;
       const firstTime = Math.min(
-        ...priced.map((position) => position.orders[0].time),
+        ...priced.map((position) => position.openingPosition
+          ? dayTime(`${Number(position.openingPosition.asOf.slice(0, 4)) + 1}-01-01`)
+          : position.orders[0].time),
         ...income.map((entry) => entry.time)
       );
       const firstYear = new Date(firstTime).getFullYear();
@@ -3451,12 +3503,14 @@
         };
 
         priced.forEach((position) => {
-          const sharesStart = sharesAt(position.orders, start);
+          const sharesStart = sharesAt(position.orders, start, position.openingPosition);
           const inYear = position.orders.filter((order) => order.time > start && order.time <= end);
           if (!sharesStart && !inYear.length) return;
-          const startValue = sharesStart ? sharesStart * markPrice(position.rows, position.orders, start) : 0;
-          const sharesEnd = sharesAt(position.orders, end);
-          const endValue = sharesEnd ? sharesEnd * markPrice(position.rows, position.orders, end) : 0;
+          const startValue = sharesStart ? sharesStart * (position.openingPosition
+            ? openingMarkPrice(position.rows, start) : markPrice(position.rows, position.orders, start)) : 0;
+          const sharesEnd = sharesAt(position.orders, end, position.openingPosition);
+          const endValue = sharesEnd ? sharesEnd * (position.openingPosition
+            ? openingMarkPrice(position.rows, current ? latestTime : end) : markPrice(position.rows, position.orders, end)) : 0;
           let buys = 0;
           let sells = 0;
           let weighted = 0;

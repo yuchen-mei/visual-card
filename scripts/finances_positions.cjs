@@ -3,6 +3,7 @@
 // Encrypted position identities and snapshot-to-snapshot lifecycle events only.
 // Never reconstruct a full historical ledger or alter orders, prices or income.
 const crypto = require("node:crypto");
+const {validateOpeningQuantities} = require("./finances_opening.cjs");
 class FinancesPositionsError extends Error {
   constructor(code) { super(code); this.name = "FinancesPositionsError"; this.code = code; }
 }
@@ -62,6 +63,42 @@ function legacyPosition(previous, symbol) {
       && item.orders.some(order => ["buy", "sell"].includes(order?.side)
         && typeof order.date === "string" && Number.isFinite(order.shares) && order.shares > 0);
   });
+}
+
+// Imported source IDs need not have changed the last saved holdings. Once an
+// opening is verified, only an appended, source-bound real order is a delta.
+function openingOrderChanges(next, previous, source, nextIds) {
+  check(object(previous.trading) && object(next.trading), "POSITION_INVALID_TRADING");
+  const changes = new Map(), seen = new Set();
+  for (const [symbol, item] of Object.entries(previous.trading)) {
+    check(object(item) && object(next.trading[symbol])
+      && (item.orders === undefined || Array.isArray(item.orders))
+      && (next.trading[symbol].orders === undefined || Array.isArray(next.trading[symbol].orders)), "POSITION_INVALID_TRADING");
+    const before = item.orders || [], after = next.trading[symbol].orders || [];
+    check(after.length >= before.length, "POSITION_TRADING_HISTORY_CHANGED");
+    same(after.slice(0, before.length), before, "POSITION_TRADING_HISTORY_CHANGED");
+  }
+  for (const [symbol, item] of Object.entries(next.trading)) {
+    check(object(item) && (item.orders === undefined || Array.isArray(item.orders)), "POSITION_INVALID_TRADING");
+    const oldLength = previous.trading[symbol]?.orders?.length || 0;
+    for (const [index, order] of (item.orders || []).entries()) {
+      check(object(order), "POSITION_INVALID_TRADING");
+      if (order.date <= next.tradeSync.baselineCutoff && index < oldLength) {
+        if (digest(order.id)) {
+          check(!seen.has(order.id), "POSITION_ORDER_SOURCE_MISMATCH"); seen.add(order.id);
+        }
+        continue;
+      }
+      const row = source.get(order.id);
+      check(digest(order.id) && !seen.has(order.id) && nextIds.has(order.id) && row
+        && row.ticker === symbol && ["date", "side", "shares", "price"].every(key => order[key] === row[key]), "POSITION_ORDER_SOURCE_MISMATCH");
+      seen.add(order.id);
+      if (index < oldLength) continue;
+      const rows = changes.get(row.key) || [];
+      rows.push({...row, id: order.id}); changes.set(row.key, rows);
+    }
+  }
+  return changes;
 }
 
 function applyPositionLifecycle(next, previous, snapshot, policy = {}) {
@@ -134,14 +171,17 @@ function applyPositionLifecycle(next, previous, snapshot, policy = {}) {
     check(!current.has(record.key) && Number.isFinite(p.shares) && p.shares > 0, "POSITION_DUPLICATE_OR_INVALID_HOLDING");
     current.set(record.key, p.shares);
   }
-  const sourceIds = new Set(), changes = new Map(), pastBuys = new Set();
+  const sourceIds = new Set(), source = new Map(), pastBuys = new Set(), historicalBuys = new Set();
+  let changes = new Map();
   const retrieved = day(String(snapshot.fetchedAt || "").slice(0, 10));
   for (const row of updates.rows) {
     const record = identity(row), tradeId = hash(encode([row.accountId, id(row.sourceId)]));
     check(!sourceIds.has(tradeId) && ["buy", "sell"].includes(row.side)
       && Number.isFinite(row.shares) && row.shares > 0, "POSITION_DUPLICATE_OR_INVALID_TRADE");
     sourceIds.add(tradeId); day(row.date); check(row.date <= retrieved, "POSITION_FUTURE_TRADE");
+    source.set(tradeId, {...row, key: record.key});
     if (row.side === "buy" && (record.firstKnownBuyDate === null || row.date < record.firstKnownBuyDate)) record.firstKnownBuyDate = row.date;
+    if (row.side === "buy" && row.date <= next.tradeSync.baselineCutoff) historicalBuys.add(record.key);
     if (row.side === "buy" && (!nextIds.has(tradeId) || oldIds.has(tradeId))) pastBuys.add(record.key);
     if (row.date > next.tradeSync.baselineCutoff) check(nextIds.has(tradeId), "POSITION_UNMERGED_TRADE");
     if (nextIds.has(tradeId)) {
@@ -153,17 +193,42 @@ function applyPositionLifecycle(next, previous, snapshot, policy = {}) {
     const rows = changes.get(record.key) || []; rows.push({...row, id: tradeId}); changes.set(record.key, rows);
   }
   for (const tradeId of nextIds.keys()) check(sourceIds.has(tradeId), "POSITION_INCOMPLETE_TRADES");
+  const opening = next.openingPositionAudit !== undefined, migration = opening && previous.openingPositionAudit === undefined;
+  check(previous.openingPositionAudit === undefined || opening, "POSITION_OPENING_AUDIT_CHANGED");
+  if (opening) {
+    same(next.historySnapshot, previous.historySnapshot, "POSITION_TRADING_HISTORY_CHANGED");
+    validateOpeningQuantities(next, snapshot);
+    if (migration) {
+      const authorization = policy.openingPositionAuthorization;
+      check(object(authorization) && Object.keys(authorization).sort().join(",") === "authorizationRef,historySha256,version"
+        && authorization.version === 1 && authorization.authorizationRef === next.openingPositionAudit.authorizationRef
+        && authorization.historySha256 === next.openingPositionAudit.historySha256, "POSITION_OPENING_AUTHORIZATION_REQUIRED");
+    } else {
+      same(next.openingPositionAudit, previous.openingPositionAudit, "POSITION_OPENING_AUDIT_CHANGED");
+      check(Array.isArray(previous.holdings) && previous.holdings.every(object), "POSITION_BASELINE_HOLDINGS_REQUIRED");
+      validateOpeningQuantities(previous, {positions: previous.holdings.filter(h => !cash(h))});
+    }
+    changes = openingOrderChanges(next, previous, source, nextIds);
+  }
   if (prior === undefined) matchHoldings([...current].map(([key, shares]) => ({ticker: records.get(key).ticker, shares})), previous.holdings);
   const addedEvents = [];
   for (const record of records.values()) {
     const old = oldRecords.get(record.key), before = old?.shares || 0, after = current.get(record.key) || 0;
     const trades = changes.get(record.key) || [];
-    if (prior !== undefined) {
+    if (prior !== undefined && migration) {
+      // A corrected baseline is not a real buy or sell and cannot announce one.
+      check((before > 0) === (after > 0), "POSITION_OPENING_MIGRATION_STATE_CHANGED");
+    } else if (prior !== undefined) {
       const delta = trades.reduce((n, row) => n + (row.side === "buy" ? row.shares : -row.shares), 0);
       check(quantityEqual(after - before, delta), "POSITION_QUANTITY_UNEXPLAINED");
       let kind;
       if (before > 0 && after === 0) kind = "closed";
-      else if (before === 0 && after > 0) kind = old || pastBuys.has(record.key) || legacyPosition(previous, record.ticker) ? "reopened" : "opened";
+      else if (before === 0 && after > 0) {
+        const heldBefore = opening
+          ? historicalBuys.has(record.key) || events.some(event => event.key === record.key) || legacyPosition(previous, record.ticker)
+          : old || pastBuys.has(record.key) || legacyPosition(previous, record.ticker);
+        kind = heldBefore ? "reopened" : "opened";
+      }
       if (kind) {
         const relevant = trades.filter(t => t.side === (kind === "closed" ? "sell" : "buy"));
         check(relevant.length > 0, "POSITION_EVENT_EVIDENCE_REQUIRED");

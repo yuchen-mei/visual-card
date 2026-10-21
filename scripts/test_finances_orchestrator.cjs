@@ -395,17 +395,18 @@ test("opening end-read repeats every brokerage holding query with the original p
  assert.equal(failed.code,"E_HOLDINGS_QUERY");assert.equal(failed.phase,"finances_read");
  assert.equal(missing.calls.marketReads.length+missing.calls.prepared.length+missing.calls.published.length+missing.calls.releases.length,0);
 });
-test("configured benchmark opening quotes extend history without changing monitoring configuration",async()=>{
+test("benchmark opening quotes extend fetch coverage while retaining the active ticker set",async()=>{
  for(const ticker of ["SPY","QQQ"]){
   const f=openingFixture();f.deps.openingMarketRanges={[ticker]:"2024-12-31"};f.fetched=copy(f.marketBase.market);
   f.fetched.prices[ticker]=[{date:"2024-12-31",close:8},...f.fetched.prices[ticker].map(row=>({...row,close:999}))];
-  const oldRanges=f.marketBase.files.find(file=>file.path==="scripts/market_price_ranges.json").content,oldPrices=copy(f.marketBase.market.prices);
+  const oldRanges=copy(f.marketBase.ranges),oldPrices=copy(f.marketBase.market.prices);
   const r=await f.run();assert.equal(r.status,"published");assert.deepEqual(f.calls.market[0].ranges,{[ticker]:"2024-12-31"});
   const release=f.calls.releases[0],market=JSON.parse(release.files.find(file=>file.path==="market.prices.json").content);
-  assert.equal(release.files.find(file=>file.path==="scripts/market_price_ranges.json").content,oldRanges);
+  const ranges=JSON.parse(release.files.find(file=>file.path==="scripts/market_price_ranges.json").content);
+  assert.deepEqual(ranges,{...oldRanges,[ticker]:"2024-12-31"});
   assert.deepEqual(market.prices[ticker],[{date:"2024-12-31",close:8},...oldPrices[ticker]]);
   for(const other of Object.keys(oldPrices).filter(symbol=>symbol!==ticker))assert.deepEqual(market.prices[other],oldPrices[other]);
-  const again=openingFixture();again.deps.openingMarketRanges={[ticker]:"2024-12-31"};again.marketBase.market=market;again.repackMarket();
+  const again=openingFixture();again.deps.openingMarketRanges={[ticker]:"2024-12-31"};again.marketBase.market=market;again.marketBase.ranges=ranges;again.repackMarket();
   const second=await again.run();assert.equal(second.status,"published");assert.equal(again.calls.market.length,0);
   assert.equal(again.calls.releases.length,0);assert.equal(again.calls.published.length,1);
  }
@@ -416,6 +417,17 @@ test("opening benchmark quote requests cannot add a missing monitoring configura
   const r=await f.run();assert.equal(r.code,"E_OPENING_PROTECTED_BENCHMARK");assert.equal(r.phase,"market_preparation");
   assert.equal(f.calls.market.length+f.calls.prepared.length+f.calls.published.length+f.calls.releases.length,0);
  }
+});
+test("stored earlier quotes repair fetch coverage without refetching or reactivating archived tickers",async()=>{
+ const f=openingFixture(true);delete f.deps.openingMarketRanges;
+ f.marketBase.market.prices.QQQ.unshift({date:"2024-12-31",close:8});
+ delete f.marketBase.ranges.OTHER;f.repackMarket();
+ const before=copy(f.marketBase),r=await f.run();
+ assert.equal(r.status,"published");assert.equal(f.calls.market.length,0);
+ const files=f.calls.releases[0].files;
+ assert.deepEqual(JSON.parse(files.find(file=>file.path==="scripts/market_price_ranges.json").content),{...before.ranges,QQQ:"2024-12-31"});
+ assert.equal(files.find(file=>file.path==="market.prices.json").content,before.files.find(file=>file.path==="market.prices.json").content);
+ assert.deepEqual(f.marketBase,before);
 });
 test("opening close removes only monitoring and never reinstates its opening range",async()=>{
  const f=openingFixture(true);f.prepared.positionEvents=[{id:"d".repeat(64),kind:"closed",ticker:"DEMO",date:"2026-10-17",firstKnownBuyDate:"2025-01-02"}];
@@ -433,7 +445,7 @@ test("opening reopen preserves stored prices and only appends scoped real quote 
  for(const ticker of ["OTHER","SPY","QQQ"])assert.deepEqual(final.prices[ticker],f.marketBase.market.prices[ticker]);
  assert.equal(JSON.parse(f.calls.releases[0].files.find(file=>file.path==="scripts/market_price_ranges.json").content).DEMO,"2025-01-02");
 });
-test("opening benchmark lifecycle keeps its original monitoring range and preserves quote history",async()=>{
+test("opening benchmark lifecycle keeps monitoring active and fetches all retained quote history",async()=>{
  for(const kind of ["opened","reopened","closed"]){
   const f=openingFixture(true);delete f.deps.openingMarketRanges;
   f.prepared.positionEvents=[{id:"d".repeat(64),kind,ticker:"SPY",date:"2026-10-17",firstKnownBuyDate:"2024-12-31"}];
@@ -441,7 +453,7 @@ test("opening benchmark lifecycle keeps its original monitoring range and preser
   if(kind==="closed"){assert.equal(f.calls.market.length,0);assert.equal(f.calls.releases.length,0);assert.equal(f.calls.published.length,1);}
   else{
    assert.equal(f.calls.market.length,1);assert.deepEqual(f.calls.market[0].ranges,{SPY:"2024-12-31"});const files=f.calls.releases[0].files;
-   assert.equal(files.find(file=>file.path==="scripts/market_price_ranges.json").content,f.marketBase.files.find(file=>file.path==="scripts/market_price_ranges.json").content);
+   assert.deepEqual(JSON.parse(files.find(file=>file.path==="scripts/market_price_ranges.json").content),{...f.marketBase.ranges,SPY:"2024-12-31"});
    assert.deepEqual(JSON.parse(f.calls.prepared[1].marketContent).prices.SPY,[{date:"2024-12-31",close:12},...f.marketBase.market.prices.SPY,{date:"2026-10-18",close:13}]);
   }
  }

@@ -14,6 +14,14 @@
  const same=(a,b)=>canonical(a)===canonical(b);
  const pretty=value=>JSON.stringify(value,null,2)+"\n";
  const MARKET_PATH="market.prices.json",RANGES_PATH="scripts/market_price_ranges.json";
+ function coverStoredHistory(ranges,prices){
+  // These dates control quote fetching, not drawdown strategy. Keep the active
+  // ticker set fixed while ensuring future fetches retain every stored date.
+  for(const ticker of Object.keys(ranges)){
+   const first=prices[ticker]?.[0]?.date;
+   if(first&&first<ranges[ticker])ranges[ticker]=first;
+  }
+ }
  function openingComparison(snapshot){
   const compared=copy(snapshot);
   // Brokerage summary balances are separately dated diagnostics. Holdings
@@ -71,7 +79,7 @@
     if(!["SPY","QQQ"].includes(ticker))finalRanges[ticker]=Object.hasOwn(ranges,ticker)&&ranges[ticker]<start?ranges[ticker]:start;
    }
   }
-  M.validateMarketData(finalMarket);M.validateRanges(finalRanges);
+  M.validateMarketData(finalMarket);coverStoredHistory(finalRanges,finalMarket.prices);M.validateRanges(finalRanges);
   const marketContent=same(finalMarket,market)?oldMarket.content:pretty(finalMarket);
   const rangesContent=same(finalRanges,ranges)?oldRanges.content:pretty(finalRanges);
   const marketSha256=await deps.hash(marketContent),rangesSha256=await deps.hash(rangesContent);
@@ -90,8 +98,8 @@
    if(["SPY","QQQ"].includes(event.ticker))requireThat(Object.hasOwn(originalRanges,event.ticker),"E_OPENING_PROTECTED_BENCHMARK");
    if(event.kind==="closed")continue;
    const rows=opening.market.prices[event.ticker];
-   // Benchmark monitoring starts stay fixed, but their real earlier trades can
-   // still require historical quotes for the final accounting validation.
+   // Benchmarks remain active; real earlier trades can require more historical
+   // quotes and the final fetch range must cover those retained prices.
    const start=["SPY","QQQ"].includes(event.ticker)
     ? [plan.ranges[event.ticker],event.firstKnownBuyDate,...(rows?[rows[0].date]:[])].sort()[0]
     : plan.ranges[event.ticker];
@@ -118,7 +126,7 @@
    }
    if(added){market.asOf=end;market.generatedAt=observed.generatedAt;}
   }
-  M.validateMarketData(market);M.validateRanges(plan.ranges);
+  M.validateMarketData(market);coverStoredHistory(plan.ranges,market.prices);M.validateRanges(plan.ranges);
   const marketContent=same(market,originalMarket)?oldMarket.content:same(market,opening.market)?opening.marketContent:pretty(market);
   const rangesContent=same(plan.ranges,originalRanges)?oldRanges.content:pretty(plan.ranges);
   const marketSha256=await deps.hash(marketContent),rangesSha256=await deps.hash(rangesContent);

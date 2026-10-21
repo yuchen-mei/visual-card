@@ -19,6 +19,15 @@ def baseline(prices, as_of="2026-01-06"):
 
 
 class MarketPriceTests(unittest.TestCase):
+    def test_checked_in_ranges_cover_all_retained_active_history(self):
+        ranges = market.load_ranges(market.DEFAULT_CONFIG)
+        existing = market.load_existing(market.DEFAULT_CONFIG.parent.parent / "market.prices.json")
+        active_prices = {ticker: existing["prices"][ticker] for ticker in ranges}
+        self.assertEqual(
+            market.validate_prices(ranges, active_prices, existing["asOf"], existing["prices"]),
+            existing["asOf"],
+        )
+
     def test_archived_series_is_preserved_and_excluded_from_latest_date(self):
         old = baseline({"OLD": rows("2020-01-02", "2020-01-03"), "LIVE": rows("2026-01-05", "2026-01-06")})
         original = copy.deepcopy(old)

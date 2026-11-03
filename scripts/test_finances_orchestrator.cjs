@@ -331,6 +331,169 @@ test("opening plans complete new-position quotes before the only publishable pre
  const files=f.calls.releases[0].files;assert.equal(files.find(file=>file.path==="market.prices.json").content,final.marketContent);
  assert.equal(JSON.parse(files.find(file=>file.path==="scripts/market_price_ranges.json").content).NEW,"2026-10-17");
 });
+function priorSessionEventFixture(){
+ const f=openingFixture(true);delete f.deps.openingMarketRanges;
+ f.prepared.positionEvents=[{id:"d".repeat(64),kind:"opened",ticker:"NEW",date:"2026-10-17",firstKnownBuyDate:"2026-10-17"}];
+ f.fetched=copy(f.marketBase.market);f.fetched.asOf="2026-10-17";f.fetched.generatedAt="2026-10-18T04:00:00Z";
+ f.fetched.prices.NEW=[{date:"2026-10-17",close:12}];
+ f.deps.local.prepareMarket=async input=>{
+  f.calls.market.push(copy(input));
+  return{status:"validated",rangesContent:JSON.stringify(input.ranges),marketContent:JSON.stringify(f.fetched)};
+ };
+ return f;
+}
+test("next UTC day accepts the latest real session covering the event without advancing its date",async()=>{
+ for(const publish of [true,false]){
+  const f=priorSessionEventFixture(),before=copy(f.marketBase),events=copy(f.prepared.positionEvents);f.request.publish=publish;
+  const r=await f.run();assert.equal(r.status,publish?"published":"dry_run");assert.equal(r.eventsReady,publish);assert.deepEqual(r.positionEvents,events);
+  assert.equal(f.calls.market.length,1);assert.equal(f.calls.market[0].end,"2026-10-18");assert.deepEqual(f.calls.market[0].ranges,{NEW:"2026-10-17"});
+  assert.equal(f.calls.prepared.length,2);assert.equal(f.calls.prepared[0].planOnly,true);assert.equal(f.calls.prepared[1].planOnly,undefined);
+  const final=JSON.parse(f.calls.prepared[1].marketContent);assert.equal(final.asOf,"2026-10-17");assert.equal(final.generatedAt,f.fetched.generatedAt);
+  assert.deepEqual(final.prices.NEW,f.fetched.prices.NEW);
+  for(const [ticker,rows]of Object.entries(before.market.prices))assert.deepEqual(final.prices[ticker],rows);
+  assert.deepEqual(f.marketBase,before);assert.deepEqual(f.prepared.positionEvents,events);
+  assert.equal(f.calls.published.length,0);assert.equal(f.calls.releases.length,1);assert.equal(f.calls.releases[0].publish,publish);
+  const files=f.calls.releases[0].files;assert.deepEqual(files.map(file=>file.path),["data.enc.json","scripts/market_price_ranges.json","market.prices.json"]);
+  assert.deepEqual(JSON.parse(files.find(file=>file.path==="scripts/market_price_ranges.json").content),{...before.ranges,NEW:"2026-10-17"});
+  assert.equal(files.find(file=>file.path==="market.prices.json").content,f.calls.prepared[1].marketContent);
+ }
+});
+test("prior-session quotes still require the real first price and event coverage before final preparation",async()=>{
+ for(const [label,change]of [
+  ["empty series",f=>{f.fetched.prices.NEW=[];}],
+  ["missing requested ticker",f=>{delete f.fetched.prices.NEW;}],
+  ["missing first real day",f=>{f.fetched.asOf="2026-10-18";f.fetched.prices.NEW=[{date:"2026-10-18",close:12}];}],
+  ["quote before first event day",f=>{f.prepared.positionEvents[0].date="2026-10-18";f.prepared.positionEvents[0].firstKnownBuyDate="2026-10-18";}],
+  ["event after latest quote",f=>{f.prepared.positionEvents[0].date="2026-10-18";}],
+  ["declared date without matching quote",f=>{f.fetched.asOf="2026-10-18";}],
+  ["future quote",f=>{f.fetched.asOf="2026-10-19";f.fetched.prices.NEW.push({date:"2026-10-19",close:13});}],
+  ["more than seven days old",f=>{f.deps.now=()=>Date.parse("2026-10-25T04:00:00Z");}],
+  ["changed untouched benchmark",f=>{f.fetched.prices.QQQ[0].close=999;}]
+ ]){
+  const f=priorSessionEventFixture(),before=copy(f.marketBase);change(f);const r=await f.run();
+  assert.equal(r.status,"failed",label);assert.equal(r.phase,"market_preparation",label);assert.equal(r.productionPreserved,true,label);
+  assert.equal(r.eventsReady,undefined,label);assert.equal(r.positionEvents,undefined,label);
+  assert.equal(f.calls.prepared.length,1,label);assert.equal(f.calls.prepared[0].planOnly,true,label);
+  assert.equal(f.calls.published.length+f.calls.releases.length,0,label);assert.deepEqual(f.marketBase,before,label);
+ }
+});
+test("the existing seven-day quote limit remains inclusive when the event is covered",async()=>{
+ const f=priorSessionEventFixture();f.deps.now=()=>Date.parse("2026-10-24T04:00:00Z");const r=await f.run();
+ assert.equal(r.status,"published");assert.equal(JSON.parse(f.calls.prepared[1].marketContent).asOf,"2026-10-17");
+});
+test("event quote asOf cannot move behind any retained historical price",async()=>{
+ const f=priorSessionEventFixture();f.marketBase.market.asOf="2026-10-18";f.marketBase.market.prices.DEMO.push({date:"2026-10-18",close:13});f.repackMarket();
+ f.prepared.positionEvents=[{id:"d".repeat(64),kind:"reopened",ticker:"DEMO",date:"2026-10-17",firstKnownBuyDate:"2024-12-31"}];
+ delete f.fetched.prices.NEW;f.fetched.prices.DEMO=[{date:"2024-12-31",close:8},{date:"2026-10-17",close:12}];
+ const before=copy(f.marketBase),r=await f.run();assert.equal(r.status,"failed");assert.equal(r.code,"E_MARKET_AFTER_ASOF");
+ assert.equal(r.phase,"market_preparation");assert.equal(r.productionPreserved,true);assert.equal(f.calls.prepared.length,1);
+ assert.equal(f.calls.prepared[0].planOnly,true);assert.equal(f.calls.published.length+f.calls.releases.length,0);assert.deepEqual(f.marketBase,before);
+});
+test("duplicate ticker events are rejected before choosing any event coverage date",async()=>{
+ const f=priorSessionEventFixture();f.prepared.positionEvents.push({...f.prepared.positionEvents[0],id:"e".repeat(64),date:"2026-10-18"});
+ const r=await f.run();assert.equal(r.status,"failed");assert.equal(r.code,"E_POSITION_MARKET_CONFLICT");assert.equal(r.phase,"local_validation");
+ assert.equal(f.calls.prepared.length,1);assert.equal(f.calls.prepared[0].planOnly,true);
+ assert.equal(f.calls.market.length+f.calls.published.length+f.calls.releases.length,0);
+});
+test("replaying an unchanged published prior-session event needs no quote fetch or new publication",async()=>{
+ const first=priorSessionEventFixture(),r=await first.run();assert.equal(r.status,"published");
+ const files=first.calls.releases[0].files,again=priorSessionEventFixture();
+ again.marketBase.market=JSON.parse(files.find(file=>file.path==="market.prices.json").content);
+ again.marketBase.ranges=JSON.parse(files.find(file=>file.path==="scripts/market_price_ranges.json").content);again.repackMarket();
+ again.prepared.status="unchanged";again.prepared.positionEvents=[];
+ const second=await again.run();assert.equal(second.status,"unchanged");assert.equal(second.notify,false);assert.equal(second.eventsReady,undefined);
+ assert.equal(again.calls.market.length+again.calls.published.length+again.calls.releases.length,0);
+ assert.ok(again.calls.prepared.every(input=>input.marketContent===again.marketBase.files.find(file=>file.path==="market.prices.json").content));
+});
+function settlementQuoteAnchorFixture(){
+ const f=openingFixture(true);delete f.deps.openingMarketRanges;f.deps.now=()=>Date.parse("2026-11-03T06:00:00Z");
+ f.prepared.positionEvents=[{id:"d".repeat(64),kind:"opened",ticker:"NEW",date:"2026-11-03",firstKnownBuyDate:"2026-11-03"}];
+ f.marketBase.market.asOf="2026-10-30";f.marketBase.market.generatedAt="2026-10-31T00:00:00Z";
+ for(const rows of Object.values(f.marketBase.market.prices))rows.splice(1,rows.length-1,...["2026-10-28","2026-10-29","2026-10-30"].map(date=>({date,close:11})));
+ f.repackMarket();f.fetched=copy(f.marketBase.market);f.fetched.asOf="2026-11-02";f.fetched.generatedAt="2026-11-03T06:00:00Z";
+ f.fetched.prices.NEW=[{date:"2026-10-29",close:9},{date:"2026-10-30",close:10},{date:"2026-11-02",close:11}];
+ f.deps.local.prepareMarket=async input=>{f.calls.market.push(copy(input));return{status:"validated",rangesContent:JSON.stringify(input.ranges),marketContent:JSON.stringify(f.fetched)};};
+ return f;
+}
+test("a new symbol can use real pre-settlement quote history without inventing a settlement-day close",async()=>{
+ for(const publish of [true,false]){
+  const f=settlementQuoteAnchorFixture(),before=copy(f.marketBase),events=copy(f.prepared.positionEvents);f.request.publish=publish;
+  const r=await f.run();assert.equal(r.status,publish?"published":"dry_run");assert.equal(r.eventsReady,publish);assert.deepEqual(r.positionEvents,events);
+  assert.deepEqual(f.calls.market.map(input=>({ranges:input.ranges,end:input.end})),[{ranges:{NEW:"2026-10-29"},end:"2026-11-03"}]);
+  assert.equal(f.calls.prepared.length,2);assert.equal(f.calls.prepared[0].planOnly,true);assert.equal(f.calls.prepared[1].planOnly,undefined);
+  const final=JSON.parse(f.calls.prepared[1].marketContent);assert.equal(final.asOf,"2026-11-02");assert.deepEqual(final.prices.NEW,f.fetched.prices.NEW);
+  assert.equal(final.prices.NEW.some(row=>row.date==="2026-11-03"),false);assert.deepEqual(f.prepared.positionEvents,events);
+  for(const [ticker,rows]of Object.entries(before.market.prices))assert.deepEqual(final.prices[ticker],rows);
+  assert.deepEqual(f.marketBase,before);assert.equal(f.calls.published.length,0);assert.equal(f.calls.releases.length,1);
+  const release=f.calls.releases[0];assert.equal(release.publish,publish);assert.deepEqual(release.files.map(file=>file.path),["data.enc.json","scripts/market_price_ranges.json","market.prices.json"]);
+  assert.deepEqual(JSON.parse(release.files.find(file=>file.path==="scripts/market_price_ranges.json").content),{...before.ranges,NEW:"2026-10-29"});
+  assert.equal(release.files.find(file=>file.path==="market.prices.json").content,f.calls.prepared[1].marketContent);
+ }
+});
+test("settlement quote anchors still reject absent, sparse, future, stale or altered source prices",async()=>{
+ for(const [label,change]of [
+  ["empty",f=>{f.fetched.prices.NEW=[];}],
+  ["missing ticker",f=>{delete f.fetched.prices.NEW;}],
+  ["single quote",f=>{f.fetched.prices.NEW=[{date:"2026-10-29",close:9}];f.fetched.asOf="2026-10-29";for(const ticker of Object.keys(f.marketBase.market.prices)){f.marketBase.market.prices[ticker].pop();f.fetched.prices[ticker].pop();}f.marketBase.market.asOf="2026-10-29";f.repackMarket();}],
+  ["missing first day",f=>{f.fetched.prices.NEW.shift();}],
+  ["future",f=>{f.fetched.asOf="2026-11-04";f.fetched.prices.NEW.push({date:"2026-11-04",close:12});}],
+  ["stale",f=>{f.deps.now=()=>Date.parse("2026-11-10T06:00:00Z");}],
+  ["changed benchmark",f=>{f.fetched.prices.SPY[0].close=999;}],
+  ["nonpositive",f=>{f.fetched.prices.NEW[0].close=0;}]
+ ]){
+  const f=settlementQuoteAnchorFixture();change(f);const before=copy(f.marketBase),r=await f.run();
+  assert.equal(r.status,"failed",label);assert.equal(r.phase,"market_preparation",label);assert.equal(r.productionPreserved,true,label);
+  assert.equal(f.calls.prepared.length,1,label);assert.equal(f.calls.prepared[0].planOnly,true,label);
+  assert.equal(f.calls.published.length+f.calls.releases.length,0,label);assert.deepEqual(f.marketBase,before,label);
+ }
+});
+test("quote anchors cannot shorten a reopening, older trade boundary, existing range or stored history",async()=>{
+ for(const change of [
+  f=>{f.prepared.positionEvents[0].kind="reopened";},
+  f=>{f.prepared.positionEvents[0].firstKnownBuyDate="2025-01-02";},
+  f=>{f.marketBase.ranges.NEW="2026-11-03";f.repackMarket();},
+  f=>{f.marketBase.market.prices.NEW=[{date:"2026-10-30",close:10}];f.repackMarket();}
+ ]){
+  const f=settlementQuoteAnchorFixture();change(f);const before=copy(f.marketBase),r=await f.run();
+  assert.equal(r.status,"failed");assert.equal(r.phase,"market_preparation");assert.equal(r.productionPreserved,true);
+  assert.equal(f.calls.prepared.length,1);assert.equal(f.calls.published.length+f.calls.releases.length,0);assert.deepEqual(f.marketBase,before);
+ }
+});
+test("anchor selection requires two shared recent benchmark dates rather than guessing trading days",async()=>{
+ for(const change of [
+  f=>{f.marketBase.market.prices.QQQ=f.marketBase.market.prices.QQQ.filter(row=>row.date==="2025-01-02"||row.date==="2026-10-30");},
+  f=>{for(const ticker of ["SPY","QQQ"])f.marketBase.market.prices[ticker]=[{date:"2025-01-02",close:10},{date:"2026-10-26",close:11},{date:"2026-10-30",close:11}];}
+ ]){
+  const f=settlementQuoteAnchorFixture();change(f);f.repackMarket();for(const ticker of ["SPY","QQQ"])f.fetched.prices[ticker]=copy(f.marketBase.market.prices[ticker]);
+  const r=await f.run();assert.equal(r.status,"failed");assert.deepEqual(f.calls.market[0].ranges,{NEW:"2026-11-03"});assert.equal(f.calls.releases.length,0);
+ }
+});
+test("actual browser calculations and chart inputs preserve a real order after the latest daily quote",()=>{
+ const fs=require("node:fs"),path=require("node:path"),vm=require("node:vm"),U=require("./update_finances.cjs");
+ const html=fs.readFileSync(path.join(__dirname,"..","index.html"),"utf8"),ui=U.browserContract(html);
+ const raw={asOf:"2026-11-03",holdings:[{ticker:"NEW",type:"etf",shares:2,value:24,costBasis:20}],
+  performance:{totalPrincipal:20,totalGain:4,totalCurrentValue:24,totalReturnPct:20},income:[],
+  trading:{NEW:{type:"etf",orders:[{id:"synthetic-trade",date:"2026-11-03",side:"buy",shares:2,price:10}],prices:[]}}};
+ const before=JSON.stringify(raw);ui.state.raw=raw;ui.state.data=ui.normalizeData(raw);ui.state.marketPrices=settlementQuoteAnchorFixture().fetched;
+ const positions=ui.annualPositions(raw),annual=ui.computeAnnualSummary(),current=annual.years.find(year=>year.current);
+ assert.equal(current.stockPnl,2);assert.equal(current.endValue,22);assert.equal(ui.state.data.totalAssetValue,24);
+ assert.equal(positions[0].orders[0].time,ui.dayTime("2026-11-03"));assert.equal(ui.openingMarkPrice(positions[0].rows,ui.dayTime(raw.asOf)),11);
+ for(const name of ["applyPublicMarketPrices","tradeTimeSpan","tradeMarkerClose","nearestPrice"]){
+  const match=html.match(new RegExp(`^    function ${name}\\([^]*?^    }`,"m"));assert(match);vm.runInContext(match[0],ui);
+ }
+ assert.equal(ui.applyPublicMarketPrices(ui.state.marketPrices),1);const item=ui.state.data.trading[0];assert.equal(item.prices.length,3);
+ assert.equal(ui.tradeTimeSpan(item).max,ui.dayTime("2026-11-03"));assert.equal(ui.tradeMarkerClose(item.prices,item.orders[0]),10);
+ assert.equal(item.prices.at(-1).date,"2026-11-02");assert.equal(annual.latestPriceTime,ui.dayTime("2026-11-02"));assert.equal(JSON.stringify(raw),before);
+});
+test("a published settlement quote anchor is retained on unchanged replay without a duplicate event",async()=>{
+ const first=settlementQuoteAnchorFixture(),r=await first.run();assert.equal(r.status,"published");
+ const files=first.calls.releases[0].files,again=settlementQuoteAnchorFixture();
+ again.marketBase.market=JSON.parse(files.find(file=>file.path==="market.prices.json").content);
+ again.marketBase.ranges=JSON.parse(files.find(file=>file.path==="scripts/market_price_ranges.json").content);again.repackMarket();
+ again.prepared.status="unchanged";again.prepared.positionEvents=[];const second=await again.run();
+ assert.equal(second.status,"unchanged");assert.equal(second.eventsReady,undefined);assert.equal(second.positionEvents,undefined);
+ assert.equal(again.calls.market.length+again.calls.published.length+again.calls.releases.length,0);
+});
 test("a second bound fetch retains earlier opening additions even for the same requested ticker",async()=>{
  const f=openingFixture(true);f.prepared.positionEvents=[{id:"d".repeat(64),kind:"reopened",ticker:"DEMO",date:"2026-10-17",firstKnownBuyDate:"2025-01-02"}];
  const r=await f.run();assert.equal(r.status,"published");assert.equal(f.calls.market.length,2);

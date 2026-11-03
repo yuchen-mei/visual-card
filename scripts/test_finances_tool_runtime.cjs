@@ -42,6 +42,28 @@ test("tool runtime rejects returned encrypted candidate hash mismatch",async()=>
  const runtime=R.createRuntime({tools,config,transport:T,source:{},publisher:{},orchestrator:{}});
  await assert.rejects(()=>runtime.prepare({operationId:"synthetic:day",baseline:{head,sha256:hash,content},snapshot:{},policy:{}}),{code:"E_CANDIDATE_RECEIPT"});
 });
+test("large encrypted candidates have sufficient read budget without weakening hash or exit checks",async()=>{
+ const candidate=JSON.stringify(U.encrypt({synthetic:true,padding:"x".repeat(73878)},"synthetic-password"),null,2)+"\n";
+ assert.equal(Buffer.byteLength(candidate),98746);const candidateHash=T.hash(candidate),requiredTokens=Math.ceil(candidate.length/4);
+ assert.equal(requiredTokens,24687);assert(requiredTokens>24000);
+ for(const mode of ["budgeted","forced-truncation","nonzero-exit"]){
+  const bridge=D.createSession({expectedHead:head,baselineSha256:hash}),cfg={...config,passwordFile:"/private/credentials/password"};let readCall;
+  const tools={exec_command:async args=>{
+   if(args.cmd.includes("--write-baseline"))return{exit_code:0,output:JSON.stringify({path:cfg.privateDirectory+"/baseline-"+hash+".enc.json"})};
+   if(args.cmd.includes("--serve-file"))return{session_id:32,output:JSON.stringify(bridge.header)};
+   if(args.cmd.includes("--read-encrypted")){
+    readCall=args;const budget=mode==="forced-truncation"?24000:args.max_output_tokens;
+    return{exit_code:mode==="nonzero-exit"?1:0,output:candidate.slice(0,budget*4),original_token_count:requiredTokens};
+   }
+   throw Error("unexpected");
+  },write_stdin:async args=>{const packet=bridge.open(JSON.parse(args.chars));return{exit_code:0,output:JSON.stringify({status:"validated",operationId:packet.operationId,expectedHead:head,baselineSha256:hash,candidatePath:cfg.privateDirectory+"/candidate-"+"a".repeat(24)+".enc.json",validatedSha256:candidateHash})};}};
+  const runtime=R.createRuntime({tools,config:cfg,transport:T,source:{},publisher:{},orchestrator:{}});
+  const run=()=>runtime.prepare({operationId:"synthetic-large-candidate",baseline:{head,sha256:hash,content},snapshot:{},policy:{}});
+  if(mode==="budgeted"){const result=await run();assert.equal(result.content,candidate);assert.equal(T.hash(result.content),candidateHash);}
+  else await assert.rejects(run,{code:"E_CANDIDATE_RECEIPT"});
+  assert.equal(readCall.max_output_tokens,100000);assert.equal(readCall.tty,false);
+ }
+});
 test("tool journal adapter holds global lock across callback and releases",async()=>{
  const actions=[];let record=null;
  const tools={exec_command:async()=>({session_id:12,output:'{"status":"ready","protocol":1,"pid":100}'}),write_stdin:async a=>{if(a.chars==="\u0003")return {exit_code:0,output:""};const q=JSON.parse(a.chars);actions.push(q.action);if(q.action==="save")record=q.record;return {session_id:12,output:JSON.stringify({id:q.id,status:({acquire:"acquired",save:"saved",load:"loaded",release:"released"})[q.action],...(q.action==="load"?{record}:{})})};}};

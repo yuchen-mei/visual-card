@@ -128,7 +128,7 @@
     if(result.status==="unchanged")return result;
     if(result.status!=="validated"||typeof result.candidatePath!=="string"||!result.candidatePath.startsWith(config.privateDirectory+"/candidate-"))fail("E_NATIVE_RECEIPT");
     stage="candidate_read";
-    const encrypted=await exec([quote(config.nodeBinary),quote(script("finances_local_io.cjs")),"--read-encrypted","--directory",quote(config.privateDirectory),"--path",quote(result.candidatePath)].join(" "),{maxTokens:24000});
+    const encrypted=await exec([quote(config.nodeBinary),quote(script("finances_local_io.cjs")),"--read-encrypted","--directory",quote(config.privateDirectory),"--path",quote(result.candidatePath)].join(" "),{maxTokens:100000});
     if(!object(encrypted)||encrypted.exit_code!==0||typeof encrypted.output!=="string"||transport.hash(encrypted.output)!==result.validatedSha256)fail("E_CANDIDATE_RECEIPT");
     return {...result,content:encrypted.output};
    }catch(error){

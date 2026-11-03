@@ -93,16 +93,27 @@
   const M=deps.market,plan=M.planRanges({ranges:copy(opening.ranges),prices:copy(opening.market.prices),events:copy(events)});
   const oldMarket=opening.baselineFiles.find(file=>file.path===MARKET_PATH),oldRanges=opening.baselineFiles.find(file=>file.path===RANGES_PATH);
   const originalMarket=M.parsePublicJSON(oldMarket.content),originalRanges=M.parsePublicJSON(oldRanges.content);
-  const subset={};
+  const subset={},quoteAnchors={};
   for(const event of events){
    if(["SPY","QQQ"].includes(event.ticker))requireThat(Object.hasOwn(originalRanges,event.ticker),"E_OPENING_PROTECTED_BENCHMARK");
    if(event.kind==="closed")continue;
    const rows=opening.market.prices[event.ticker];
    // Benchmarks remain active; real earlier trades can require more historical
    // quotes and the final fetch range must cover those retained prices.
-   const start=["SPY","QQQ"].includes(event.ticker)
+   let start=["SPY","QQQ"].includes(event.ticker)
     ? [plan.ranges[event.ticker],event.firstKnownBuyDate,...(rows?[rows[0].date]:[])].sort()[0]
     : plan.ranges[event.ticker];
+   // A first provider settlement date need not have a daily close yet. Only a
+   // wholly new symbol may request recent, real benchmark session dates as a
+   // quote anchor; its own returned prices must independently prove coverage.
+   // Existing histories and reopenings keep their original strict boundaries.
+   if(event.kind==="opened"&&event.firstKnownBuyDate===event.date&&!rows
+    &&!Object.hasOwn(originalMarket.prices,event.ticker)&&!Object.hasOwn(originalRanges,event.ticker)){
+    const otherDates=new Set((originalMarket.prices.QQQ||[]).map(row=>row.date));
+    const priorDates=(originalMarket.prices.SPY||[]).map(row=>row.date).filter(date=>otherDates.has(date)&&date<event.date
+     &&Date.parse(`${event.date}T00:00:00Z`)-Date.parse(`${date}T00:00:00Z`)<=7*86400000);
+    if(priorDates.length>=2){start=priorDates.at(-2);plan.ranges[event.ticker]=start;quoteAnchors[event.ticker]=event.date;}
+   }
    if(!rows||rows[0].date>start||rows.at(-1).date<event.date)subset[event.ticker]=start;
   }
   const market=copy(opening.market);
@@ -113,18 +124,26 @@
    const refreshed=copy(await deps.local.prepareMarket({ranges:copy(subset),existingContent:oldMarket.content,end}));
    requireThat(refreshed.status==="validated"&&typeof refreshed.rangesContent==="string"&&typeof refreshed.marketContent==="string","E_OPENING_MARKET_RECEIPT");
    const ranges=M.validateRanges(M.parsePublicJSON(refreshed.rangesContent)),observed=M.validateMarketData(M.parsePublicJSON(refreshed.marketContent));
-   requireThat(same(ranges,subset)&&observed.asOf===end,"E_OPENING_MARKET_RECEIPT");
+   // The latest real session can precede the UTC fetch date. It must still be
+   // recent, and every requested series must cover its actual event below.
+   const age=Date.parse(`${end}T00:00:00Z`)-Date.parse(`${observed.asOf}T00:00:00Z`);
+   requireThat(same(ranges,subset)&&age>=0&&age<=7*86400000,"E_OPENING_MARKET_RECEIPT");
    requireThat(Object.keys(observed.prices).every(ticker=>Object.hasOwn(originalMarket.prices,ticker)||Object.hasOwn(subset,ticker)),"E_OPENING_MARKET_SCOPE");
    for(const [ticker,rows]of Object.entries(originalMarket.prices))if(!Object.hasOwn(subset,ticker))requireThat(same(observed.prices[ticker],rows),"E_OPENING_MARKET_SCOPE");
    let added=false;
    for(const [ticker,start]of Object.entries(subset)){
-    requireThat(Array.isArray(observed.prices[ticker]),"E_OPENING_MARKET_RECEIPT");
+    const rows=observed.prices[ticker],event=events.find(event=>event.ticker===ticker);
+    requireThat(Array.isArray(rows)&&rows.length>0&&rows[0].date===start&&rows.at(-1).date===observed.asOf,"E_OPENING_MARKET_RECEIPT");
+    if(Object.hasOwn(quoteAnchors,ticker)){
+     const prior=rows.filter(row=>row.date<=event.date).at(-1);
+     requireThat(rows.length>=2&&prior&&Date.parse(`${event.date}T00:00:00Z`)-Date.parse(`${prior.date}T00:00:00Z`)<=7*86400000,"E_OPENING_MARKET_RECEIPT");
+    }else requireThat(rows.at(-1).date>=event.date,"E_OPENING_MARKET_RECEIPT");
     const oldRows=market.prices[ticker]||[],dates=new Set(oldRows.map(row=>row.date));
     const extra=observed.prices[ticker].filter(row=>row.date>=start&&row.date<=end&&!dates.has(row.date));
     market.prices[ticker]=[...copy(oldRows),...extra].sort((a,b)=>a.date.localeCompare(b.date));
     if(extra.length)added=true;
    }
-   if(added){market.asOf=end;market.generatedAt=observed.generatedAt;}
+   if(added){market.asOf=observed.asOf;market.generatedAt=observed.generatedAt;}
   }
   M.validateMarketData(market);coverStoredHistory(plan.ranges,market.prices);M.validateRanges(plan.ranges);
   const marketContent=same(market,originalMarket)?oldMarket.content:same(market,opening.market)?opening.marketContent:pretty(market);

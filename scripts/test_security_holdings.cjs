@@ -52,7 +52,7 @@ function harness(previewMode = false, sourceHtml = html) {
     decryptPayload:async data=>data
   });
   Object.assign(ui.state,{selectedHolding:0,selectedPerformance:0,dataVersion:0,password:"synthetic-test-only",selectedTradingTicker:""});
-  const names=["shownHolding","activateData","refreshData","unlockWith","polar","donutPath","svgEl","centerLabel","holdingCenterLabel","renderDonut","addSvgText","setSvgText","updateDonutSelection","updateRowSelection","renderHoldingsChart","updateHoldingSelection","selectHolding","formatHoldingType","renderHoldingList","renderSummary","renderHero","renderRanking","renderTickerSelector"];
+  const names=["shownHolding","labelSecurities","activateData","refreshData","unlockWith","polar","donutPath","svgEl","centerLabel","holdingCenterLabel","renderDonut","addSvgText","setSvgText","updateDonutSelection","updateRowSelection","renderHoldingsChart","updateHoldingSelection","selectHolding","formatHoldingType","renderHoldingList","renderSummary","renderHero","renderRanking","renderTickerSelector"];
   vm.runInContext(names.map(name=>{const match=sourceHtml.match(new RegExp(`^    (?:async )?function ${name}\\([^]*?^    }`,"m"));assert.ok(match,name);return match[0];}).join("\n"),ui);
   ui.render=()=>{ui.renderSummary();ui.renderHoldingsChart();ui.renderHoldingList();ui.renderRanking();ui.renderTickerSelector();};
   return {ui,el,activate:raw=>ui.activateData(raw,null)};
@@ -338,6 +338,20 @@ for (const [page, sourceHtml] of [["production",html],["standalone preview",prev
     assert.equal(ui.state.data.holdings.find(i=>i.ticker==="USD").nameZh,"USD");
     assert.doesNotMatch(JSON.stringify(ui.state.data.holdings),/示例银行/);
     assert.equal(ui.state.data.cashValue,0);assert.equal(ui.state.data.totalAssetValue,400);
+  });
+
+  test(`${page} fills a Chinese display name only for ticker-only placeholders without changing data`,()=>{
+    const {ui,el,activate}=harness(false,sourceHtml),raw=fixture(null,0);
+    raw.holdings=[{ticker:"DRAM",type:"etf",nameZh:"DRAM",value:500},{ticker:"SPY",type:"etf",nameZh:"已保存标普",value:300},{ticker:"EX0",type:"stock",nameZh:"EX0",value:100}];
+    raw.trading={DRAM:trade({nameZh:"DRAM"}),SPY:trade({nameZh:"SPY"}),EX0:trade({nameZh:"EX0"})};
+    freeze(raw);const before=JSON.stringify(raw);activate(raw);
+    const expected=[["DRAM","Roundhill 存储芯片 ETF"],["SPY","已保存标普"],["EX0","EX0"]];
+    assert.deepEqual(plain(ui.state.data.holdings.map(i=>[i.ticker,i.nameZh])),expected);
+    assert.deepEqual(plain(ui.state.data.trading.map(i=>[i.ticker,i.nameZh])),expected);
+    assert.match(el("holdingList").children[0].innerHTML,/Roundhill 存储芯片 ETF/);
+    assert.equal(ui.holdingCenterLabel(ui.state.data.holdings[0]),"存储芯片");
+    assert.equal(JSON.stringify(raw),before);
+    assert.deepEqual(plain(ui.normalizeData(ui.state.data)),plain(ui.state.data));
   });
 }
 

@@ -1465,7 +1465,7 @@
           </div>
         </header>
 
-        <div id="tabs" class="tabs" role="tablist" aria-label="Dashboard tabs" data-active="holdings">
+        <div id="tabs" class="tabs" role="tablist" aria-label="视图切换" data-active="holdings">
           <button class="tab active" id="holdingsTab" type="button" role="tab" aria-selected="true" aria-controls="holdingsPanel">持仓</button>
           <button class="tab" id="performanceTab" type="button" role="tab" aria-selected="false" aria-controls="performancePanel">收益</button>
           <button class="tab" id="tradingTab" type="button" role="tab" aria-selected="false" aria-controls="tradingPanel">交易</button>
@@ -1959,9 +1959,38 @@
       }
     }
 
+    // The pipeline seeds a new position's nameZh with its bare ticker (e.g. "DRAM").
+    // Fill in a Chinese display name here, after normalizeData, so the functions the
+    // pipeline executes stay unchanged and nothing is written back into the data.
+    // A real Chinese name saved in the data always wins over this table. Keep the
+    // table inside the function: test harnesses extract page functions one by one.
+    function labelSecurities(data) {
+      const namesZh = {
+        AAPL: "苹果",
+        AMZN: "亚马逊",
+        DRAM: "Roundhill 存储芯片 ETF",
+        GOOGL: "谷歌 A 类",
+        MSFT: "微软",
+        NVDA: "英伟达",
+        QQQ: "景顺纳斯达克100 ETF",
+        SPY: "标普500 ETF",
+        TSM: "台积电 ADR"
+      };
+      const label = (item) => {
+        if (!item || typeof item !== "object") return;
+        const ticker = String(item.ticker || "").trim().toUpperCase();
+        const name = String(item.nameZh || "").trim();
+        const fallback = Object.hasOwn(namesZh, ticker) ? namesZh[ticker] : "";
+        if (fallback && (!name || name.toUpperCase() === ticker)) item.nameZh = fallback;
+      };
+      (data.holdings || []).forEach(label);
+      (data.trading || []).forEach(label);
+      return data;
+    }
+
     function activateData(data, market) {
       state.raw = data;
-      state.data = normalizeData(data);
+      state.data = labelSecurities(normalizeData(data));
       state.dataVersion += 1;
       state.marketPrices = null;
       state.selectedHolding = 0;
@@ -2401,7 +2430,7 @@
         const data = await decryptPayload(encrypted, state.password);
         const market = await settleWithin(marketPromise, 1200);
         state.raw = data;
-        state.data = normalizeData(data);
+        state.data = labelSecurities(normalizeData(data));
         state.dataVersion += 1;
         state.marketPrices = null;
         state.selectedHolding = Math.max(0, Math.min(state.selectedHolding, state.data.holdings.length - 1));
@@ -2502,6 +2531,7 @@
     function holdingCenterLabel(item) {
       const ticker = String(item.ticker || "").toUpperCase();
       const explicit = {
+        DRAM: "存储芯片",
         QQQ: "纳斯达克100",
         SPY: "标普500",
         TSM: "台积电"

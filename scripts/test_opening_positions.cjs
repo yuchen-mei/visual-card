@@ -130,7 +130,7 @@ test("an opening at the latest calculation boundary cannot invent a future annua
 });
 test("page markup, trading behavior and annual presentation remain byte-for-byte unchanged", () => {
   const hash = value => crypto.createHash("sha256").update(value).digest("hex");
-  assert.equal(hash(html.slice(0, html.indexOf("<script>"))), "ee3dee5bf9dcb54095337f7f53e218a89f1f6f4e7f9a8887c31eac71ef532f26");
+  assert.equal(hash(html.slice(0, html.indexOf("<script>"))), "7c0915411c5f0fc9e962bf7154156a196862a6d2cc910444e5453ece858905fd");
   const expected = {
     normalizeTradingData: "821010fa56aacdce53e96a9a3c9411ea7b022aa4cf4b7a0a229bb64b0b1d5a5f",
     tradeTimeSpan: "6b0ecb703997d3887eaa381bcfad5d021b6264a5b72c1cff2e621c40e8d0fcb9",

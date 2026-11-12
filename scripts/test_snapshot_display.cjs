@@ -329,13 +329,14 @@ test("complete legacy view and all static explanation text match the stable page
   assert.equal(result.years[0].stockPnl, 50);
   context.renderSummary();
   assert.equal(element("meta").textContent, "2024-06-30 · USD · 现金 + 股票 / ETF");
-  // Pinned from public 95f17ac:index.html; no git dependency or private fixture.
+  // Annual renderer pinned from public 95f17ac:index.html; markup pinned after the
+  // Chinese tab-list aria-label. No git dependency or private fixture.
   const hash = value => createHash("sha256").update(value).digest("hex");
   const annualRenderer = html.match(/^    function renderAnnualSummary\([^]*?^    }/m)[0];
   assert.equal(hash(annualRenderer), "6a5c4ed42bef53793d1e1cb8f4ac21f66dca1e41fd812fc0a3fd855c7caa8422");
   const scriptStart = html.indexOf("  <script>");
   assert.ok(scriptStart > 0);
-  assert.equal(hash(html.slice(0, scriptStart)), "a08db094245212b3be31d45a52a41cdaf29b67235cf0c640c25a7cba8ecf40c7");
+  assert.equal(hash(html.slice(0, scriptStart)), "e14deaa484671ba25594feb23974fc90e4f9906e8b4e5bf11e058144d560279b");
 });
 
 let failures = 0;

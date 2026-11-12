@@ -134,10 +134,38 @@ test("page markup, trading behavior and annual presentation remain byte-for-byte
   const expected = {
     normalizeTradingData: "821010fa56aacdce53e96a9a3c9411ea7b022aa4cf4b7a0a229bb64b0b1d5a5f",
     tradeTimeSpan: "6b0ecb703997d3887eaa381bcfad5d021b6264a5b72c1cff2e621c40e8d0fcb9",
-    renderTradeList: "bb6519dbed01451eb74b45e47a16edc2c9b4dfb2da0a3d0fa55aaca0af7d1478",
+    renderTradeList: "9dada629cc2b5958ec9a88097d56ef7a609f79cdee41990b21531ce6df3fe9e2",
     renderTradeChart: "4a07993aa12a1026523fadd91537d5d65790eb254e8db7dbc73dc68c5bcd0f72",
     renderTradeSummary: "0f5ef7676ce145c6f2248fffa315c0324bcd7fb36c5d7bed74305af1a51b1470",
     renderAnnualSummary: "6a5c4ed42bef53793d1e1cb8f4ac21f66dca1e41fd812fc0a3fd855c7caa8422"
   };
   for (const [name, value] of Object.entries(expected)) assert.equal(hash(functionText(name)), value, name);
+});
+test("trade list shows newest orders first while each row keeps its chronological order index", () => {
+  const rows = [], previews = [], selected = [];
+  const orders = [
+    {date: "2024-01-10", side: "buy", shares: 1, price: 10},
+    {date: "2024-03-05", side: "sell", shares: 1, price: 12},
+    {date: "2024-06-28", side: "buy", shares: 2, price: 11}
+  ];
+  const ctx = vm.createContext({
+    $: () => ({innerHTML: "", appendChild: row => rows.push(row)}),
+    currentTradingItem: () => ({orders}),
+    shownTrade: () => 0,
+    document: {createElement: () => ({className: "", dataset: {}, innerHTML: ""})},
+    formatChartDate: value => value,
+    formatCurrencyFull: value => `$${value}`,
+    bindPreview: (row, kind, index) => previews.push(index),
+    bindActivate: (row, activate) => { row.activate = activate; },
+    selectTrade: index => selected.push(index)
+  });
+  vm.runInContext(functionText("renderTradeList"), ctx);
+  ctx.renderTradeList();
+  assert.deepEqual(rows.map(row => row.innerHTML.match(/\d{4}-\d{2}-\d{2}/)[0]), ["2024-06-28", "2024-03-05", "2024-01-10"]);
+  assert.deepEqual(rows.map(row => row.dataset.index), ["2", "1", "0"]);
+  assert.deepEqual(previews, [2, 1, 0]);
+  assert.deepEqual(rows.map(row => row.className), ["trade-row", "trade-row", "trade-row active"]);
+  rows[0].activate();
+  assert.deepEqual(selected, [2]);
+  assert.equal(orders.map(order => order.date).join(), "2024-01-10,2024-03-05,2024-06-28");
 });

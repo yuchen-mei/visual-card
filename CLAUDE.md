@@ -17,7 +17,7 @@ node --test scripts/test_*.cjs
 python3 -m unittest discover -s scripts -p 'test_fetch_market_prices.py'
 ```
 
-- 当前为 JS 588 项 + Python 11 项。数量变化时同步更新 README 里的测试数。
+- 当前为 JS 589 项 + Python 11 项。数量变化时同步更新 README 里的测试数。
 - `scripts/native/` 的钥匙串测试会编译原生程序，只在改动 native 代码时运行。
 
 ## 改网页时的隐藏约束

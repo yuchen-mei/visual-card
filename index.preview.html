@@ -2889,7 +2889,8 @@
       if (!item) return;
       const shown = shownTrade();
 
-      item.orders.forEach((order, index) => {
+      // 列表从新到旧显示；每行仍保留它在 item.orders（按时间升序）中的下标，图上标记与选中都用这个下标。
+      [...item.orders.entries()].reverse().forEach(([index, order]) => {
         const isSell = order.side === "sell";
         const row = document.createElement("div");
         row.className = `trade-row ${index === shown ? "active" : ""}`.trim();

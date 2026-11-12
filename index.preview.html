@@ -683,6 +683,28 @@
       border-bottom: 1px solid var(--line);
     }
 
+    .gain-curve-card {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 32px;
+      padding-bottom: 32px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .curve-readout .readout-value {
+      margin-top: 0;
+    }
+
+    .curve-readout .readout-date {
+      margin-top: 4px;
+      font-size: 13px;
+    }
+
+    .curve-chart-wrap {
+      position: relative;
+      height: clamp(220px, 32vh, 320px);
+    }
+
     .annual-years {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -766,6 +788,10 @@
 
     .annual-table .empty-cell {
       color: var(--soft);
+    }
+
+    .annual-notes:empty {
+      display: none;
     }
 
     .annual-notes {
@@ -1052,7 +1078,8 @@
       height: clamp(280px, 40vh, 400px);
     }
 
-    svg.trade-chart {
+    svg.trade-chart,
+    svg.curve-chart {
       position: absolute;
       inset: 0;
       width: 100%;
@@ -1064,7 +1091,8 @@
       --trend: var(--good);
     }
 
-    svg.trade-chart.is-down {
+    svg.trade-chart.is-down,
+    svg.curve-chart.is-down {
       --trend: var(--danger);
     }
 
@@ -1383,6 +1411,10 @@
         height: clamp(220px, 58vw, 300px);
       }
 
+      .curve-chart-wrap {
+        height: clamp(200px, 50vw, 260px);
+      }
+
       .readout-value {
         font-size: 2rem;
       }
@@ -1518,6 +1550,20 @@
               <div class="metric-sub">现金 + 股票 / ETF</div>
             </div>
           </div>
+
+          <section id="gainCurveSection" class="gain-curve-card" hidden>
+            <div class="list-head">
+              <strong>收益曲线</strong>
+              <span>按每日收盘价</span>
+            </div>
+            <div class="curve-readout">
+              <div id="gainCurveValue" class="readout-value gain"></div>
+              <div id="gainCurveDate" class="readout-date"></div>
+            </div>
+            <div class="curve-chart-wrap">
+              <svg id="gainCurveChart" class="curve-chart" role="img" tabindex="0" aria-label="累计收益曲线，可左右拖动或用方向键查看历史收益"></svg>
+            </div>
+          </section>
 
           <section id="annualSection" class="annual-card">
             <div class="list-head">
@@ -2021,6 +2067,7 @@
         state.marketPrices = late;
         renderTrading();
         renderAnnualSummary();
+        renderGainCurve();
       });
     }
 
@@ -2463,6 +2510,9 @@
       state.marketPrices = null;
       state.selectedHolding = 0;
       tradeChartModel = null;
+      gainCurveData = null;
+      gainCurveModel = null;
+      $("gainCurveChart").innerHTML = "";
       clearPreviews();
       $("passwordInput").value = "";
       $("dashboard").style.display = "none";
@@ -3125,21 +3175,22 @@
     }
 
     // 拖动查看只更新十字线和读数的几个属性，每帧最多一次，不重绘整张图。
-    function bindTradeChartScrub() {
-      const svg = $("tradeChart");
+    // 交易图和收益曲线共用：getModel 返回当前图的 { points, index }。
+    function bindChartScrub(svg, getModel, scrubToIndex, endScrubbing) {
       let frame = 0;
       let pending = null;
 
       const scrubAtPointer = (event) => {
-        if (!tradeChartModel) return;
+        if (!getModel()) return;
         pending = { x: event.clientX, y: event.clientY };
         if (frame) return;
         frame = window.requestAnimationFrame(() => {
           frame = 0;
+          const model = getModel();
           const matrix = svg.getScreenCTM();
-          if (!matrix || !pending || !tradeChartModel) return;
+          if (!matrix || !pending || !model) return;
           const point = new DOMPoint(pending.x, pending.y).matrixTransform(matrix.inverse());
-          scrubTo(nearestPointIndex(tradeChartModel.points, point.x));
+          scrubToIndex(nearestPointIndex(model.points, point.x));
         });
       };
 
@@ -3149,7 +3200,7 @@
           window.cancelAnimationFrame(frame);
           frame = 0;
         }
-        endScrub();
+        endScrubbing();
       };
 
       svg.addEventListener("pointermove", scrubAtPointer);
@@ -3160,19 +3211,24 @@
         if (event.pointerType !== "mouse") stop();
       });
       svg.addEventListener("keydown", (event) => {
-        if (event.target !== svg || !tradeChartModel) return;
-        const count = tradeChartModel.points.length;
-        const current = tradeChartModel.index < 0 ? count - 1 : tradeChartModel.index;
+        const model = getModel();
+        if (event.target !== svg || !model) return;
+        const count = model.points.length;
+        const current = model.index < 0 ? count - 1 : model.index;
         const step = event.shiftKey ? 10 : 1;
         const moves = { ArrowLeft: current - step, ArrowRight: current + step, Home: 0, End: count - 1 };
         if (Object.prototype.hasOwnProperty.call(moves, event.key)) {
           event.preventDefault();
-          scrubTo(moves[event.key]);
+          scrubToIndex(moves[event.key]);
         } else if (event.key === "Escape") {
-          endScrub();
+          endScrubbing();
         }
       });
-      svg.addEventListener("blur", endScrub);
+      svg.addEventListener("blur", endScrubbing);
+    }
+
+    function bindTradeChartScrub() {
+      bindChartScrub($("tradeChart"), () => tradeChartModel, scrubTo, endScrub);
     }
 
     // 容器尺寸变化（窗口缩放、切到交易页）时按新尺寸重绘；尺寸未变则跳过。
@@ -3588,6 +3644,66 @@
       return { years, tickers, latestPriceTime, incomeCount: income.length };
     }
 
+    // 累计收益曲线，与 computeAnnualSummary 同一口径、同一组估值函数：
+    // 累计收益 = 持仓市值 − 期初承接市值 − 累计净买入 + 累计现金利息 / 股息。
+    // 任意两个年末之间的差就是该年年度收益；终点按最新收盘价估值，等于年度表的合计。
+    function computeGainCurve() {
+      const raw = state.raw;
+      if (!raw || !state.data) return null;
+      const positions = annualPositions(raw).filter((position) => position.rows.length);
+      const income = (Array.isArray(raw.income) ? raw.income : [])
+        .map((entry) => ({ time: dayTime(entry.date), amount: Number(entry.amount) }))
+        .filter((entry) => entry.time !== null && Number.isFinite(entry.amount));
+      if (!positions.length && !income.length) return null;
+
+      const latestCandidate = Math.max(
+        dayTime(raw.asOf) ?? -Infinity,
+        ...positions.map((position) => position.rows[position.rows.length - 1].time)
+      );
+      const latestTime = Number.isFinite(latestCandidate) ? latestCandidate : Date.now();
+      const firstTime = Math.min(
+        ...positions.map((position) => position.openingPosition
+          ? position.openingPosition.time : position.orders[0].time),
+        ...income.map((entry) => entry.time)
+      );
+      if (!Number.isFinite(firstTime) || firstTime >= latestTime) return null;
+
+      // 时间为 Infinity 时按最新收盘价、全部交易和全部收入计算，与年度表“年初至今”的期末一致。
+      const gainAt = (time) => {
+        let gain = 0;
+        positions.forEach((position) => {
+          const opening = position.openingPosition;
+          const shares = sharesAt(position.orders, time, opening);
+          if (shares) gain += shares * markPrice(position.rows, position.orders, time);
+          if (opening && time >= opening.time) {
+            gain -= opening.shares * markPrice(position.rows, position.orders, opening.time);
+          }
+          for (const order of position.orders) {
+            if (order.time > time) break;
+            const amount = order.shares * (order.price > 0 ? order.price : 0);
+            gain += order.side === "sell" ? amount : -amount;
+          }
+        });
+        income.forEach((entry) => {
+          if (entry.time <= time) gain += entry.amount;
+        });
+        return gain;
+      };
+
+      const times = new Set([firstTime]);
+      positions.forEach((position) => {
+        position.rows.forEach((row) => times.add(row.time));
+        position.orders.forEach((order) => times.add(order.time));
+      });
+      income.forEach((entry) => times.add(entry.time));
+      const points = [...times]
+        .filter((time) => time >= firstTime && time < latestTime)
+        .sort((a, b) => a - b)
+        .map((time) => ({ time, gain: gainAt(time) }));
+      points.push({ time: latestTime, gain: gainAt(Infinity) });
+      return { points, latestTime };
+    }
+
     function renderAnnualSummary() {
       const yearsEl = $("annualYears");
       const tableEl = $("annualTable");
@@ -3637,11 +3753,6 @@
             }
             tableEl.innerHTML = `<table class="annual-table"><thead><tr><th>股票</th>${head}<th>合计</th></tr></thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table>`;
           }
-
-          notes.push("<div>收益 = 年末市值 − 年初市值 − 当年净投入，已含卖出实现的盈亏；收益率按资金在年内停留的时间加权（Modified Dietz），只统计股票 / ETF。</div>");
-          notes.push(summary.incomeCount
-            ? `<div>已计入 ${summary.incomeCount} 条现金利息 / 股息记录。</div>`
-            : "<div>现金利息和股息按实际入账日期计入年度收益。</div>");
         }
 
         notesEl.innerHTML = notes.join("");
@@ -3732,6 +3843,146 @@
       setText("heroDeltaValue", gain === null ? "" : `${formatSignedCurrency(gain)}${pct === null ? "" : ` (${formatSignedPct(pct)})`}`);
     }
 
+    // 收益曲线：计算结果缓存在 gainCurveData，尺寸变化时只重绘，不重算。
+    let gainCurveData = null;
+    let gainCurveModel = null;
+    let gainCurveSize = "";
+
+    function renderGainCurve() {
+      gainCurveData = null;
+      // 收益曲线出错不能影响其余页面。
+      try {
+        gainCurveData = computeGainCurve();
+      } catch (err) {
+        gainCurveData = null;
+      }
+      $("gainCurveSection").hidden = !(gainCurveData?.points.length >= 2);
+      drawGainCurve();
+      setGainCurveReadout(null);
+    }
+
+    function drawGainCurve() {
+      const svg = $("gainCurveChart");
+      svg.innerHTML = "";
+      gainCurveModel = null;
+      const data = gainCurveData;
+      if (!data || data.points.length < 2) return;
+
+      const wrap = svg.parentElement;
+      const measured = wrap.clientWidth > 0 && wrap.clientHeight > 0;
+      const width = measured ? Math.round(wrap.clientWidth) : 860;
+      const height = measured ? Math.round(wrap.clientHeight) : 320;
+      gainCurveSize = measured ? `${width}x${height}` : "";
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      const first = data.points[0];
+      const last = data.points[data.points.length - 1];
+      svg.classList.toggle("is-down", last.gain < 0);
+
+      const chartLeft = 14;
+      const chartRight = width - 14;
+      const chartTop = 20;
+      const chartBottom = height - 32;
+      const gains = data.points.map((point) => point.gain);
+      // 纵轴始终包含 0，零线把盈利和亏损分开。
+      const minGain = Math.min(0, ...gains);
+      const maxGain = Math.max(0, ...gains);
+      const pad = (maxGain - minGain || 1) * 0.12;
+      const x = scaleLinear(first.time, last.time, chartLeft, chartRight);
+      const y = scaleLinear(minGain - pad, maxGain + pad, chartBottom, chartTop);
+      const points = data.points.map((point) => ({ ...point, x: x(point.time), y: y(point.gain) }));
+      const zeroY = y(0).toFixed(2);
+      const line = points.map((point, index) => `${index ? "L" : "M"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
+      const area = `${line} L ${points[points.length - 1].x.toFixed(2)} ${zeroY} L ${points[0].x.toFixed(2)} ${zeroY} Z`;
+
+      svg.appendChild(svgEl("line", {
+        x1: String(chartLeft),
+        x2: String(chartRight),
+        y1: zeroY,
+        y2: zeroY,
+        class: "baseline-line"
+      }));
+
+      [first.time, first.time + (last.time - first.time) / 2, last.time].forEach((time, index) => {
+        const label = svgEl("text", {
+          x: x(time).toFixed(2),
+          y: String(height - 10),
+          "text-anchor": index === 0 ? "start" : index === 2 ? "end" : "middle",
+          class: "axis-label"
+        });
+        label.textContent = formatChartTime(time);
+        svg.appendChild(label);
+      });
+
+      svg.appendChild(svgEl("path", { d: area, class: "price-area" }));
+      svg.appendChild(svgEl("path", { d: line, class: "price-path" }));
+
+      const scrub = svgEl("g", { display: "none" });
+      const scrubLine = svgEl("line", {
+        x1: "0",
+        x2: "0",
+        y1: String(chartTop),
+        y2: String(chartBottom),
+        class: "scrub-line"
+      });
+      const scrubDot = svgEl("circle", { cx: "0", cy: "0", r: "5", class: "scrub-dot" });
+      scrub.append(scrubLine, scrubDot);
+      svg.appendChild(scrub);
+
+      gainCurveModel = { points, scrub, scrubLine, scrubDot, index: -1 };
+    }
+
+    // 默认显示最新累计收益；拖动曲线时显示对应日期的累计收益。
+    function setGainCurveReadout(point) {
+      const data = gainCurveData;
+      if (!data || data.points.length < 2) return;
+      const last = data.points[data.points.length - 1];
+      const shown = point || last;
+      const value = $("gainCurveValue");
+      setTextNow(value, shown.gain, formatSignedCurrency);
+      value.classList.toggle("negative", shown.gain < 0);
+      setText("gainCurveDate", point ? formatChartTime(point.time) : `截至 ${formatChartTime(last.time)}`);
+    }
+
+    function scrubGainCurveTo(index) {
+      const model = gainCurveModel;
+      if (!model || !model.points.length) return;
+      const i = Math.max(0, Math.min(model.points.length - 1, index));
+      const point = model.points[i];
+      model.index = i;
+      model.scrub.removeAttribute("display");
+      model.scrubLine.setAttribute("x1", point.x.toFixed(2));
+      model.scrubLine.setAttribute("x2", point.x.toFixed(2));
+      model.scrubDot.setAttribute("cx", point.x.toFixed(2));
+      model.scrubDot.setAttribute("cy", point.y.toFixed(2));
+      setGainCurveReadout(point);
+    }
+
+    function endGainCurveScrub() {
+      const model = gainCurveModel;
+      if (!model || model.index < 0) return;
+      model.index = -1;
+      model.scrub.setAttribute("display", "none");
+      setGainCurveReadout(null);
+    }
+
+    // 切到收益页或窗口缩放时按容器实际尺寸重绘；尺寸未变则跳过。
+    function watchGainCurveSize() {
+      if (!("ResizeObserver" in window)) return;
+      const wrap = $("gainCurveChart").parentElement;
+      let frame = 0;
+      const observer = new ResizeObserver(() => {
+        window.cancelAnimationFrame(frame);
+        frame = window.requestAnimationFrame(() => {
+          if (!gainCurveData || !wrap.clientWidth || !wrap.clientHeight) return;
+          const size = `${Math.round(wrap.clientWidth)}x${Math.round(wrap.clientHeight)}`;
+          if (size === gainCurveSize) return;
+          drawGainCurve();
+          setGainCurveReadout(null);
+        });
+      });
+      observer.observe(wrap);
+    }
+
     function switchTab(tab) {
       state.activeTab = tab;
       $("tabs").dataset.active = tab;
@@ -3774,6 +4025,7 @@
       renderPerformanceList();
       renderRanking();
       renderAnnualSummary();
+      renderGainCurve();
       renderTrading();
       updateHoldingSelection(false);
       updatePerformanceSelection(false);
@@ -3803,6 +4055,8 @@
 
     bindTradeChartScrub();
     watchTradeChartSize();
+    bindChartScrub($("gainCurveChart"), () => gainCurveModel, scrubGainCurveTo, endGainCurveScrub);
+    watchGainCurveSize();
     prefetchData();
 
     window.addEventListener("load", () => {

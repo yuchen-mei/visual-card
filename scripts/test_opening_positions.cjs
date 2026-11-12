@@ -130,14 +130,14 @@ test("an opening at the latest calculation boundary cannot invent a future annua
 });
 test("page markup, trading behavior and annual presentation remain byte-for-byte unchanged", () => {
   const hash = value => crypto.createHash("sha256").update(value).digest("hex");
-  assert.equal(hash(html.slice(0, html.indexOf("<script>"))), "7c0915411c5f0fc9e962bf7154156a196862a6d2cc910444e5453ece858905fd");
+  assert.equal(hash(html.slice(0, html.indexOf("<script>"))), "9b387f76f77e63605cc15b6896d1afb4b15a04fa3d019d0105a44dac1cba744b");
   const expected = {
     normalizeTradingData: "821010fa56aacdce53e96a9a3c9411ea7b022aa4cf4b7a0a229bb64b0b1d5a5f",
     tradeTimeSpan: "6b0ecb703997d3887eaa381bcfad5d021b6264a5b72c1cff2e621c40e8d0fcb9",
     renderTradeList: "9dada629cc2b5958ec9a88097d56ef7a609f79cdee41990b21531ce6df3fe9e2",
     renderTradeChart: "4a07993aa12a1026523fadd91537d5d65790eb254e8db7dbc73dc68c5bcd0f72",
     renderTradeSummary: "0f5ef7676ce145c6f2248fffa315c0324bcd7fb36c5d7bed74305af1a51b1470",
-    renderAnnualSummary: "6a5c4ed42bef53793d1e1cb8f4ac21f66dca1e41fd812fc0a3fd855c7caa8422"
+    renderAnnualSummary: "46ca87a4b105837036a7fcb9bcb0e117b337d6a67c40bf4deb97349487356dd7"
   };
   for (const [name, value] of Object.entries(expected)) assert.equal(hash(functionText(name)), value, name);
 });

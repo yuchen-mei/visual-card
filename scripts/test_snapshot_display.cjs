@@ -21,6 +21,7 @@ const names = [
 const elements = new Map();
 let deliverMarket = null;
 let tradingRenders = 0;
+let gainCurveRenders = 0;
 function element(id) {
   if (!elements.has(id)) elements.set(id, {
     innerHTML: "", textContent: "", hidden: false, rows: [], classList: { toggle() {} },
@@ -32,6 +33,7 @@ const context = vm.createContext({
   state: { raw: null, data: null, marketPrices: null }, DAY_MS: 86400000,
   requestMarketPrices: () => ({ then(resolve) { deliverMarket = resolve; } }),
   renderTrading: () => { tradingRenders++; },
+  renderGainCurve: () => { gainCurveRenders++; },
   window: { cancelAnimationFrame() {} },
   $: element, document: { createElement: () => ({ className: "", innerHTML: "" }) },
   setText: (id, text) => { element(id).textContent = text; },
@@ -97,6 +99,7 @@ function activate(raw) {
   context.state.dataVersion = (context.state.dataVersion || 0) + 1;
   deliverMarket = null;
   tradingRenders = 0;
+  gainCurveRenders = 0;
 }
 const tests = [];
 const test = (name, run) => tests.push({ name, run });
@@ -153,6 +156,7 @@ test("immediate and late public prices fill saved orders without changing them",
       assert.equal(JSON.stringify(context.state.data.trading[0].orders), orders);
       deliverMarket(market);
       assert.equal(tradingRenders, 1);
+      assert.equal(gainCurveRenders, 1);
     } else context.applyMarketData(market);
     assert.equal(context.state.data.trading.length, 1);
     assert.equal(context.state.data.trading[0].prices.length, 2);
@@ -304,8 +308,7 @@ test("stable annual accounting excludes undated income without new explanations"
   assert.equal(context.state.raw.income[0].amount,20);
   assert.equal(result.incomeCount, 1);
   context.renderAnnualSummary();
-  assert.match(element("annualNotes").innerHTML, /已计入 1 条现金利息 \/ 股息记录。/);
-  assert.doesNotMatch(element("annualNotes").innerHTML, /未含缺少入账日期|日期未知|年度收益暂缺/);
+  assert.equal(element("annualNotes").innerHTML, "");
   assert.equal(JSON.stringify(raw), before);
 });
 test("review and correction metadata do not add non-stable annual copy",()=>{
@@ -316,8 +319,7 @@ test("review and correction metadata do not add non-stable annual copy",()=>{
   assert.equal(context.state.raw.historyReview.state,"awaiting_dated_evidence");
   assert.equal(context.computeAnnualSummary().years[0].income,0);
   assert.equal(context.computeAnnualSummary().years[0].stockPnl,20);
-  assert.match(element("annualNotes").innerHTML,/现金利息和股息按实际入账日期计入年度收益。/);
-  assert.doesNotMatch(element("annualNotes").innerHTML,/未含缺少入账日期|日期未知|核验/);
+  assert.equal(element("annualNotes").innerHTML,"");
  }
 });
 
@@ -329,14 +331,14 @@ test("complete legacy view and all static explanation text match the stable page
   assert.equal(result.years[0].stockPnl, 50);
   context.renderSummary();
   assert.equal(element("meta").textContent, "2024-06-30 · USD · 现金 + 股票 / ETF");
-  // Annual renderer pinned from public 95f17ac:index.html; markup pinned after the
-  // Chinese tab-list aria-label. No git dependency or private fixture.
+  // Annual renderer and markup pinned after adding the gain curve and trimming the
+  // explanatory notes. No git dependency or private fixture.
   const hash = value => createHash("sha256").update(value).digest("hex");
   const annualRenderer = html.match(/^    function renderAnnualSummary\([^]*?^    }/m)[0];
-  assert.equal(hash(annualRenderer), "6a5c4ed42bef53793d1e1cb8f4ac21f66dca1e41fd812fc0a3fd855c7caa8422");
+  assert.equal(hash(annualRenderer), "46ca87a4b105837036a7fcb9bcb0e117b337d6a67c40bf4deb97349487356dd7");
   const scriptStart = html.indexOf("  <script>");
   assert.ok(scriptStart > 0);
-  assert.equal(hash(html.slice(0, scriptStart)), "e14deaa484671ba25594feb23974fc90e4f9906e8b4e5bf11e058144d560279b");
+  assert.equal(hash(html.slice(0, scriptStart)), "3d759db3635491a18ea13c8340bd39fe24ca12f1f77970af80a2264529d9ca4e");
 });
 
 let failures = 0;

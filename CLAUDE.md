@@ -17,13 +17,14 @@ node --test scripts/test_*.cjs
 python3 -m unittest discover -s scripts -p 'test_fetch_market_prices.py'
 ```
 
-- 当前为 JS 589 项 + Python 11 项。数量变化时同步更新 README 里的测试数。
+- 当前为 JS 597 项 + Python 11 项。数量变化时同步更新 README 里的测试数。
 - `scripts/native/` 的钥匙串测试会编译原生程序，只在改动 native 代码时运行。
 
 ## 改网页时的隐藏约束
 
 - **管线会执行 `index.html` 里的 JS。** `scripts/update_finances.cjs` 的 `browserContract` 按函数名用正则（从 `^    function 名字(` 到第一个 `^    }`）抽出一组函数（`decryptPayload`、`normalizeData`、`normalizeTradingData`、`computeAnnualSummary` 等，完整名单见该函数），放进只含这些函数的 vm 里运行。这些函数必须保持 4 空格缩进的顶层声明，且不能引用名单之外的顶层常量或函数，否则每日更新会以 `BROWSER_CONTRACT_CHANGED` 或 ReferenceError 停机。纯展示逻辑放在 `normalizeData` 之后执行（参考 `labelSecurities`）。
-- **测试 harness 同样按函数名抽取**（`test_security_holdings.cjs`、`test_snapshot_display.cjs`、`test_opening_positions.cjs`）。被 `activateData`、`refreshData` 等调用的新辅助函数要自包含（常量写在函数内部），并加入对应 harness 的名单。
+- **测试 harness 同样按函数名抽取**（`test_security_holdings.cjs`、`test_snapshot_display.cjs`、`test_opening_positions.cjs`、`test_gain_curve.cjs`）。被 `activateData`、`refreshData`、`applyMarketData` 等调用的新辅助函数要自包含（常量写在函数内部），并加入对应 harness 的名单或桩函数。
+- 交易图与收益曲线共用 `bindChartScrub` 处理拖动和方向键。
 - **部分测试钉住了页面字节哈希**：`<script>` 之前的全部标记与样式（`test_opening_positions.cjs`、`test_snapshot_display.cjs`），以及 `normalizeTradingData`、`renderTradeList`、`renderTradeChart`、`renderAnnualSummary` 等函数。有意改动时更新哈希，并在提交说明里写明改了什么。
 - `index.preview.html` 目前与 `index.html` 逐字节相同，测试会对两页分别运行。改完 `index.html` 后执行 `cp index.html index.preview.html`。
 - 钥匙串 helper 构建时会把 `index.html` 的字节编入二进制。若改动了 `browserContract` 抽取的函数，要提醒部署侧（Ruby）重新构建 helper；只改展示层不影响它。
@@ -31,7 +32,15 @@ python3 -m unittest discover -s scripts -p 'test_fetch_market_prices.py'
 ## 网站文案
 
 - 页面面向中文读者：所有可见文字以及 `aria-label`、`title` 都用中文；ETF、ADR 等通用缩写保留英文。
+- 文案保持简短。网站不需要严谨的口径说明，不要在页面上写公式推导或防御性说明；口径细节记在本文件和测试里。空数据、计算失败这类状态提示可以保留。
 - 证券中文名：管线给新开仓位的 `nameZh` 预置为代码本身（例如 `DRAM`），之后只沿用已保存的名称，不在管线里翻译。新增持仓时，在 `index.html` 的 `labelSecurities` 表里补中文名（数据里已有的中文名优先）；名称过长时，在 `holdingCenterLabel` 的 `explicit` 表里补环形图中心的短名。
+
+## 收益口径
+
+- 收益页有两套口径，不要强行对齐：
+  - 顶部“累计收益”来自管线的 `performance`（`userConfirmedReturnMethod`）：累计收益 = 券商快照里的证券市值 − 场内资金本金，场内资金本金 = 用户确认的总本金 − 券商现金。它不看逐笔交易；再按券商持仓成本拆成“股票 / ETF 浮盈”（市值 − 成本）和余数“现金利息/已止盈收益”（成本 − 场内资金本金）。
+  - 年度收益表和收益曲线由页面按交易账本和每日公开收盘价计算（`computeAnnualSummary`、`computeGainCurve`）：期初承接持仓从承接日按市值起算，现金利息只计入 `income` 里的条目。交易账本与当前持仓分开维护（见 `docs/finances-update.md` 的 `currentSnapshotLedgerSeparation`），份额可能不一致。
+- 收益曲线必须与年度表保持同一口径：两个年末之间的差等于该年收益，终点等于年度表合计（`test_gain_curve.cjs` 覆盖）。改动其中一个时同步另一个。
 
 ## 本地预览
 

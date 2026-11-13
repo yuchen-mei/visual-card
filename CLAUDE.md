@@ -29,6 +29,14 @@ python3 -m unittest discover -s scripts -p 'test_fetch_market_prices.py'
 - `index.preview.html` 目前与 `index.html` 逐字节相同，测试会对两页分别运行。改完 `index.html` 后执行 `cp index.html index.preview.html`。
 - 钥匙串 helper 构建时会把 `index.html` 的字节编入二进制。若改动了 `browserContract` 抽取的函数，要提醒部署侧（Ruby）重新构建 helper；只改展示层不影响它。
 
+## 视觉风格
+
+- 固定深色主题（没有浅色模式）：近黑底、香槟金点缀、柔和光晕，追求克制的高级感。颜色都用 `:root` 里的变量，金色系是 `--gold`、`--gold-bright`、`--gold-soft`、`--gold-glow`。涨跌不用饱和的绿 / 红（和主题不搭），改用暖色：`--good` 是香槟金，`--danger` 是铜珊瑚；买入 / 卖出也用这两个颜色。
+- 装饰保持平面的光感（光点、光线、光晕），不要做有高光和暗边的立体物件。锁定页的 `.lock-glint` 就是一颗小亮点加两侧渐隐的细光线。
+- 图表的渐变和发光滤镜定义在 `<body>` 开头的 `.svg-defs` 里（`areaUp`、`areaDown`、`areaGold`、`beamGold`、`lineGlow`、`dotGlow`、`softGlow`），由 CSS 用 `url(#…)` 引用。这样不用改那些固定了哈希的渲染函数。这个 svg 不能设 `display: none`，否则部分浏览器不渲染渐变。渐变色是写死的，改 `--good` / `--danger` / `--gold` 时要同步改这里。
+- 背景微光由 `startAmbientLight` 在 `#ambient` 画布上绘制：约 30 帧每秒，页面在后台时暂停，系统要求减少动态效果时只画一帧静止画面。卡片不要加 `backdrop-filter`，否则下面的动画会让每帧都重算模糊。
+- 收益曲线固定用金色线、竖光束和终点光点；交易图按涨跌用 `--good` / `--danger`。
+
 ## 网站文案
 
 - 页面面向中文读者：所有可见文字以及 `aria-label`、`title` 都用中文；ETF、ADR 等通用缩写保留英文。

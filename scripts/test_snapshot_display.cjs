@@ -331,14 +331,14 @@ test("complete legacy view and all static explanation text match the stable page
   assert.equal(result.years[0].stockPnl, 50);
   context.renderSummary();
   assert.equal(element("meta").textContent, "2024-06-30 · USD · 现金 + 股票 / ETF");
-  // Annual renderer and markup pinned after adding the gain curve and trimming the
-  // explanatory notes. No git dependency or private fixture.
+  // Annual renderer pinned after trimming the explanatory notes; markup pinned after
+  // the dark glow theme. No git dependency or private fixture.
   const hash = value => createHash("sha256").update(value).digest("hex");
   const annualRenderer = html.match(/^    function renderAnnualSummary\([^]*?^    }/m)[0];
   assert.equal(hash(annualRenderer), "46ca87a4b105837036a7fcb9bcb0e117b337d6a67c40bf4deb97349487356dd7");
   const scriptStart = html.indexOf("  <script>");
   assert.ok(scriptStart > 0);
-  assert.equal(hash(html.slice(0, scriptStart)), "3d759db3635491a18ea13c8340bd39fe24ca12f1f77970af80a2264529d9ca4e");
+  assert.equal(hash(html.slice(0, scriptStart)), "5abfa23ee1f29c8563b6b3b4c98e36643185f657bc3743532ef7fbbcf1740762");
 });
 
 let failures = 0;
